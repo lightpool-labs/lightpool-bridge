@@ -4,8 +4,6 @@ EVM-side bridge contracts for LightPool deposit / withdraw.
 
 ## Model
 
-Hyperliquid-style flow without cold wallets:
-
 1. Validators sign off-chain (Link collects signatures).
 2. Leader submits `requestWithdraw` / `requestCommitteeUpdate` with hot quorum (`2/3+1` stake).
 3. Requests stay **pending** for `disputePeriodSeconds` (default 200).
