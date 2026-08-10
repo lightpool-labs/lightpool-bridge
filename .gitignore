@@ -1,6 +1,7 @@
-cache/
-out/
-lib/
-broadcast/
+/target/
+contracts/cache/
+contracts/out/
+contracts/lib/
+contracts/broadcast/
 .env
 *.log

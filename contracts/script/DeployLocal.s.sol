@@ -33,12 +33,29 @@ contract DeployLocal is Script {
             validators
         );
 
-        usdt.mint(deployer, 1_000_000e6);
+        // Local faucet: large supply for validator/maker + optional app user.
+        // Amounts are whole USDT * 1e6 (token decimals).
+        uint256 makerAmount = 1_000_000_000_000e6; // 1e12 USDT (validator/maker)
+        uint256 userAmount = 10_000e6; // 10_000 USDT (frontend user)
+        address user = vm.envOr(
+            "USER_ETH",
+            address(0xC019cECd52FE1f68b53daf766c4aF0Dea667A2c7)
+        );
+
+        usdt.mint(deployer, makerAmount);
+        usdt.mint(validator, makerAmount);
+        if (user != address(0) && user != deployer && user != validator) {
+            usdt.mint(user, userAmount);
+        }
+
         vm.stopBroadcast();
 
         console2.log("USDT", address(usdt));
         console2.log("BRIDGE", address(bridge));
         console2.log("DEPLOYER", deployer);
         console2.log("VALIDATOR_ETH", validator);
+        console2.log("USER_ETH", user);
+        console2.log("MAKER_USDT_MINTED", makerAmount);
+        console2.log("USER_USDT_MINTED", userAmount);
     }
 }
