@@ -1,9 +1,12 @@
 // Copyright (c) LightPool Labs
 // Author: xiaoyu1998
 
-use anyhow::{bail, Context, Result};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
 use clap::Parser;
-use lightpool_bridge::{spawn_bridge_link, BridgeLinkConfig};
+use lightpool_bridge::spawn_bridge_link;
 use lightpool_types::Committee;
 use log::info;
 use tokio_util::sync::CancellationToken;
@@ -13,7 +16,13 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     /// Bridge config JSON
     #[arg(long, value_name = "FILE")]
-    config: String,
+    config: PathBuf,
+    /// Admin UI listen address (embedded in bridge process)
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    admin_listen: SocketAddr,
+    /// Disable embedded admin UI
+    #[arg(long)]
+    no_admin: bool,
 }
 
 #[tokio::main]
@@ -21,14 +30,11 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
-    let config = BridgeLinkConfig::read(&args.config)
-        .with_context(|| format!("failed to read config {}", args.config))?;
+    let config = lightpool_bridge::BridgeLinkConfig::read(&args.config)
+        .with_context(|| format!("failed to read config {}", args.config.display()))?;
 
     if !config.enabled {
-        bail!("bridge config has enabled=false; refusing to start");
-    }
-    if config.evm_bridge_address.is_empty() {
-        bail!("evm_bridge_address is empty");
+        anyhow::bail!("bridge config has enabled=false; refusing to start");
     }
 
     let (name, secret_key) = config.load_wallet().context("failed to load wallet")?;
@@ -40,10 +46,24 @@ async fn main() -> Result<()> {
         cancel_clone.cancel();
     });
 
-    let committee = Committee::new(Vec::new(), 0);
-    let Some(handle) = spawn_bridge_link(config, name, secret_key, committee, cancel) else {
-        bail!("Bridge failed to start");
+    let admin_listen = if args.no_admin {
+        None
+    } else {
+        Some(args.admin_listen)
     };
-    handle.await.context("Bridge task joined with error")?;
+
+    let committee = Committee::new(Vec::new(), 0);
+    let _handle = spawn_bridge_link(
+        args.config,
+        config,
+        name,
+        secret_key,
+        committee,
+        admin_listen,
+        cancel.clone(),
+    )
+    .context("Bridge failed to start")?;
+
+    cancel.cancelled().await;
     Ok(())
 }

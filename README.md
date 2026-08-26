@@ -6,7 +6,7 @@ Standalone off-chain bridge process for LightPool, plus EVM contracts under `con
 
 ```text
 ┌─────────────┐   DepositInitiated    ┌──────────────────┐
-│ tools/reth  │ ────────────────────► │ lightpool-bridge │
+│ lightpool-node/tools/reth │ ────────────────────► │ lightpool-bridge │
 │ EVM :8545   │ ◄── request/finalize ─│   (this binary)  │
 └─────────────┘         cast          └────────┬─────────┘
                                                │ HTTP
@@ -23,23 +23,32 @@ Standalone off-chain bridge process for LightPool, plus EVM contracts under `con
 
 ## Local test flow (4 terminals)
 
-Full step-by-step: [`docs/MANUAL_COMMANDS.md`](docs/MANUAL_COMMANDS.md)
+Local setup guides:
+
+- [`docs/RETH_FOREIGN_NODE.md`](docs/RETH_FOREIGN_NODE.md) — Reth (EVM) as foreign node
+- [`docs/LIGHTPOOL_FOREIGN_NODE.md`](docs/LIGHTPOOL_FOREIGN_NODE.md) — second LightPool node as foreign node
+
+Requires `lightpool-node` and this repo under `~/work/lightpool-labs/`.
 
 ```bash
+export WORK=~/work/lightpool-labs
+export NODE=$WORK/lightpool-node
+export BRIDGE=$WORK/lightpool-bridge
+
 # A — Reth
-./tools/reth/run-dev.sh
+$NODE/tools/reth/run-dev.sh
 
-# B — LightPool (no --bridge-config)
-cd lightpool && cargo run -p lightpool --release -- node --role validator
+# B — LightPool
+cd $NODE && source ./env.sh && lightpool node --role validator
 
-# C — Bridge process (after deploy writes config)
-cd lightpool-bridge && cargo run --release -- \
-  --config ../tools/bridge-local/bridge-config.json
+# D — Deploy (needs A + B)
+cd $NODE/scripts/event-contract-setup
+python3 00_bridge_bootstrap.py --phase deploy
 
-# D — Deploy / init / deposit CLI
-cd lightpool/scripts/event-contract-setup
-python3 00_bridge_bootstrap.py --phase deploy   # needs Reth + node
-# start Terminal C, then:
+# C — Bridge process
+$BRIDGE/target/release/lightpool-bridge --config $BRIDGE/bridge-config.json
+
+# D — Init
 python3 00_bridge_bootstrap.py --phase init
 ```
 
@@ -47,8 +56,17 @@ python3 00_bridge_bootstrap.py --phase init
 
 - `src/` — Rust binary `lightpool-bridge`
 - `contracts/` — Foundry EVM contracts and deploy scripts
-- `docs/MANUAL_COMMANDS.md` — deposit / withdraw runbook
+- `docs/RETH_FOREIGN_NODE.md` — Reth + LightPool + bridge runbook
+- `docs/LIGHTPOOL_FOREIGN_NODE.md` — two LightPool nodes + bridge runbook
 - `bridge.config.example.json` — config template
+
+Embedded admin UI (default http://127.0.0.1:8787):
+
+```bash
+$BRIDGE/target/release/lightpool-bridge --config $BRIDGE/bridge-config.json
+```
+
+Disable with `--no-admin`. Config hot-reload via the UI; restart to pick up `wallet_path` changes.
 
 ## Build
 
@@ -81,5 +99,5 @@ forge build
 
 ## Related
 
-- LightPool on-chain bridge module: `lightpool/crates/lightpool-x/src/modules/bridge`
-- Local Reth: `tools/reth`
+- LightPool node + bootstrap: [lightpool-node](https://github.com/lightpool-labs/lightpool-node)
+- Local Reth: `lightpool-node/tools/reth` (inside the node repo)

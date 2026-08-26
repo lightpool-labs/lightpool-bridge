@@ -38,6 +38,21 @@ impl EvmCommittee {
             stakes: members.iter().map(|(_, s)| *s).collect(),
         }
     }
+
+    pub fn from_validator_committee(committee: &lightpool_types::Committee) -> Self {
+        let mut members: Vec<([u8; 20], u64)> = committee
+            .authorities
+            .iter()
+            .filter(|(_, authority)| authority.stake > 0)
+            .map(|(pk, authority)| (pk.to_ethereum_address(), authority.stake))
+            .collect();
+        members.sort_by(|a, b| a.0.cmp(&b.0));
+        Self {
+            epoch: committee.epoch as u64,
+            validators: members.iter().map(|(a, _)| *a).collect(),
+            stakes: members.iter().map(|(_, s)| *s).collect(),
+        }
+    }
 }
 
 pub fn withdraw_id(

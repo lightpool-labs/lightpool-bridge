@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bridge</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #93a4ba;
+      --accent: #4da3ff;
+      --danger: #ff6b6b;
+      --ok: #3ddc97;
+      --warn: #ffc857;
+      --sidebar-w: 260px;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5; height: 100vh; display: flex; flex-direction: column; }
+    header {
+      padding: 0.65rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      flex-shrink: 0;
+    }
+    .header-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .layout { display: flex; flex: 1; min-height: 0; }
+    .sidebar {
+      width: var(--sidebar-w);
+      border-right: 1px solid var(--border);
+      background: #121a26;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    .route-tree { list-style: none; margin: 0; padding: 0.5rem 0; overflow-y: auto; flex: 1; }
+    .tree-item {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.45rem 0.75rem 0.45rem 1rem;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      font-size: 0.875rem;
+    }
+    .tree-item:hover { background: rgba(255,255,255,0.04); }
+    .tree-item.active {
+      background: rgba(77, 163, 255, 0.12);
+      border-left-color: var(--accent);
+    }
+    .tree-item.root {
+      font-weight: 600;
+      cursor: default;
+      border-left-color: transparent;
+    }
+    .tree-item.root:hover { background: transparent; }
+    .tree-item.child { padding-left: 1.75rem; }
+    .tree-item .icon { color: var(--muted); font-size: 0.75rem; width: 1rem; text-align: center; flex-shrink: 0; }
+    .tree-item .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .content-body { flex: 1; overflow: auto; padding: 1rem 1.25rem; }
+    .toolbar { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 0.75rem;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      font-size: 0.8125rem;
+      color: var(--muted);
+    }
+    input, select, button, textarea {
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0d121a;
+      color: var(--text);
+      padding: 0.45rem 0.65rem;
+    }
+    input[type="checkbox"] { width: auto; align-self: start; margin-top: 0.35rem; }
+    button { cursor: pointer; background: #243247; }
+    button.primary { background: var(--accent); color: #041018; border-color: transparent; font-weight: 600; }
+    button.danger { background: #402028; color: #ffd6d6; border-color: #703040; }
+    button.ghost { background: transparent; border-color: var(--border); color: var(--muted); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { text-align: left; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      border: 1px solid var(--border);
+    }
+    .badge.evm { color: #9fd0ff; }
+    .badge.lightpool { color: #b6f0d0; }
+    .badge.off { opacity: 0.5; }
+    .badge.info { color: #9fd0ff; }
+    .badge.warn { color: var(--warn); }
+    .badge.error { color: #ffb4b4; }
+    #toast {
+      position: fixed; right: 1rem; bottom: 1rem;
+      padding: 0.75rem 1rem; border-radius: 8px;
+      background: #102018; border: 1px solid #28543f; color: var(--ok);
+      display: none; max-width: 420px; z-index: 30;
+    }
+    #toast.error { border-color: #703040; color: #ffb4b4; background: #201015; }
+    dialog {
+      border: 1px solid var(--border); border-radius: 12px;
+      background: var(--panel); color: var(--text);
+      width: min(640px, 96vw); padding: 0;
+    }
+    dialog::backdrop { background: rgba(0,0,0,0.55); }
+    .dialog-body { padding: 1rem 1.25rem 1.25rem; }
+    .dialog-head {
+      padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+    .hidden { display: none !important; }
+    .mono { font-family: ui-monospace, monospace; font-size: 0.8125rem; }
+    .event-detail { color: var(--muted); font-size: 0.8125rem; max-width: 360px; word-break: break-word; }
+    .empty { color: var(--muted); text-align: center; padding: 2rem; font-size: 0.875rem; }
+    .sidebar-actions { padding: 0.5rem 0.75rem; border-top: 1px solid var(--border); display: flex; gap: 0.35rem; }
+    .sidebar-actions button { flex: 1; font-size: 0.8125rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 class="header-title">lightpool-bridge</h1>
+    <div class="toolbar">
+      <label style="flex-direction:row;align-items:center;gap:0.35rem;color:var(--text);font-size:0.8125rem">
+        <input type="checkbox" id="autoRefresh" checked /> Auto
+      </label>
+      <button type="button" id="reloadBtn">Refresh</button>
+      <button type="button" id="settingsBtn">Settings</button>
+      <button type="button" class="primary" id="addRouteBtn">+ Add route</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <ul class="route-tree" id="routeTree"></ul>
+      <div class="sidebar-actions">
+        <button type="button" id="editRouteBtn" disabled>Edit</button>
+        <button type="button" class="danger" id="removeRouteBtn" disabled>Remove</button>
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="content-body">
+        <table>
+          <tbody id="eventsBody"></tbody>
+        </table>
+        <div class="empty hidden" id="eventsEmpty">No events yet</div>
+      </div>
+    </section>
+  </div>
+
+  <dialog id="settingsDialog">
+    <div class="dialog-head">
+      <strong>Global settings</strong>
+      <button type="button" id="closeSettingsBtn">Close</button>
+    </div>
+    <div class="dialog-body">
+      <div class="grid">
+        <label>Enabled <input type="checkbox" id="enabled" /></label>
+        <label>Local LP RPC <input id="localRpc" placeholder="http://127.0.0.1:26300" /></label>
+        <label>Wallet path <input id="walletPath" placeholder="/path/to/wallet.json" /></label>
+        <label>Poll interval (ms) <input id="pollMs" type="number" min="100" /></label>
+        <label>Dispute period (s) <input id="disputeSec" type="number" min="1" /></label>
+        <label>Cast binary <input id="castBin" placeholder="cast" /></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="cancelSettingsBtn">Cancel</button>
+        <button type="button" class="primary" id="saveGlobalBtn">Save</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="routeDialog">
+    <div class="dialog-head">
+      <strong id="dialogTitle">Add route</strong>
+      <button type="button" id="closeDialogBtn">Close</button>
+    </div>
+    <div class="dialog-body">
+      <div class="grid">
+        <label>Route ID <input id="routeId" /></label>
+        <label>Enabled <input type="checkbox" id="routeEnabled" /></label>
+        <label>Kind
+          <select id="routeKind">
+            <option value="evm">evm (Reth / ERC20)</option>
+            <option value="lightpool">lightpool (foreign LP)</option>
+          </select>
+        </label>
+        <label>Local inbound bridge contract <input id="localBridgeContract" placeholder="optional" /></label>
+        <label>Local LP token <input id="localLpToken" placeholder="optional" /></label>
+      </div>
+      <div id="evmFields" class="grid" style="margin-top:0.75rem">
+        <label>EVM RPC <input id="evmRpc" /></label>
+        <label>Chain ID <input id="evmChainId" type="number" /></label>
+        <label>Bridge contract <input id="evmBridge" /></label>
+        <label>Token address <input id="evmToken" /></label>
+        <label>Confirmations <input id="evmConf" type="number" min="0" /></label>
+        <label>Start block <input id="evmStart" type="number" min="0" /></label>
+      </div>
+      <div id="lpFields" class="grid hidden" style="margin-top:0.75rem">
+        <label>Foreign LP RPC <input id="lpRpc" /></label>
+        <label>Foreign chain ID <input id="lpChainId" type="number" /></label>
+        <label>Outbound bridge contract <input id="lpOutbound" /></label>
+        <label>Foreign token <input id="lpForeignToken" /></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="cancelRouteBtn">Cancel</button>
+        <button type="button" class="primary" id="saveRouteBtn">Save route</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="addKindDialog">
+    <div class="dialog-head">
+      <strong>Add route</strong>
+      <button type="button" id="closeAddKindBtn">Close</button>
+    </div>
+    <div class="dialog-body">
+      <p style="color:var(--muted);margin:0 0 0.75rem;font-size:0.875rem">Choose foreign chain type:</p>
+      <div class="toolbar">
+        <button type="button" class="primary" id="addEvmBtn">EVM (Reth)</button>
+        <button type="button" id="addLpBtn">LightPool</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast"></div>
+
+  <script>
+    let config = null;
+    let status = null;
+    let selectedRouteId = "";
+    let editingRouteId = null;
+    let creating = false;
+    let refreshTimer = null;
+
+    const $ = (id) => document.getElementById(id);
+
+    function toast(msg, isError = false) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.className = isError ? "error" : "";
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 3500);
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+        ...opts,
+      });
+      if (res.status === 204) return null;
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : null;
+      if (!res.ok) throw new Error(data?.error || res.statusText);
+      return data;
+    }
+
+    function validatorLabel() {
+      if (!status?.validator) return "—";
+      return status.validator.length > 18
+        ? status.validator.slice(0, 16) + "…"
+        : status.validator;
+    }
+
+    function ensureSelectedRoute() {
+      const routes = config?.routes || [];
+      if (selectedRouteId && routes.some((r) => r.id === selectedRouteId)) return;
+      selectedRouteId = routes[0]?.id || "";
+    }
+
+    function selectRoute(id) {
+      selectedRouteId = id;
+      renderTree();
+      loadEvents().catch((err) => toast(err.message, true));
+    }
+
+    function renderTree() {
+      const tree = $("routeTree");
+      tree.innerHTML = "";
+
+      const root = document.createElement("li");
+      root.className = "tree-item root mono";
+      root.innerHTML = `<span class="icon">▸</span><span class="label">${validatorLabel()}</span>`;
+      tree.appendChild(root);
+
+      for (const route of config?.routes || []) {
+        const li = document.createElement("li");
+        li.className = "tree-item child" + (selectedRouteId === route.id ? " active" : "");
+        const kind = route.foreign.kind;
+        const off = route.enabled ? "" : ' <span class="badge off">off</span>';
+        li.innerHTML = `
+          <span class="icon">•</span>
+          <span class="label"><code>${route.id}</code>${off}</span>
+          <span class="badge ${kind}">${kind}</span>
+        `;
+        li.addEventListener("click", () => selectRoute(route.id));
+        tree.appendChild(li);
+      }
+
+      const hasRoute = !!selectedRouteId;
+      $("editRouteBtn").disabled = !hasRoute;
+      $("removeRouteBtn").disabled = !hasRoute;
+    }
+
+    function routeMeta(routeId) {
+      const route = config?.routes?.find((r) => r.id === routeId);
+      const rs = status?.routes?.find((r) => r.id === routeId);
+      return { route, rs };
+    }
+
+    function isEvmTokenEvent(kind) {
+      return [
+        "deposit_seen",
+        "evm_request_sent",
+        "evm_request_failed",
+        "evm_finalized",
+        "evm_finalize_failed",
+      ].includes(kind);
+    }
+
+    function formatTokenCell(e) {
+      if (!e.route_id || e.route_id === "global") return "—";
+      const { route, rs } = routeMeta(e.route_id);
+      const symbol = "USDT";
+      if (isEvmTokenEvent(e.kind) && route?.foreign?.kind === "evm") {
+        const addr =
+          route.foreign.token_address || rs?.evm_token_on_chain || e.token || "—";
+        return `${symbol}(${addr})`;
+      }
+      const lp = rs?.lp_token_on_chain || route?.local_inbound?.lp_token || e.token || "—";
+      return `${symbol}(${lp})`;
+    }
+
+    function formatAmountCell(e) {
+      if (e.amount == null) return "—";
+      const value = Number(e.amount) / 1_000_000;
+      return value.toLocaleString("en-US", {
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 4,
+      });
+    }
+
+    function renderEvents(events) {
+      const body = $("eventsBody");
+      body.innerHTML = "";
+      const sorted = [...events].sort((a, b) => {
+        const dt = Number(b.ts_ms) - Number(a.ts_ms);
+        return dt !== 0 ? dt : Number(b.id) - Number(a.id);
+      });
+      $("eventsEmpty").classList.toggle("hidden", sorted.length > 0);
+      for (const e of sorted) {
+        const tr = document.createElement("tr");
+        const ts = new Date(Number(e.ts_ms)).toISOString();
+        tr.innerHTML = `
+          <td class="mono">${ts}</td>
+          <td class="mono">${formatTokenCell(e)}</td>
+          <td>${e.kind}</td>
+          <td class="mono">${formatAmountCell(e)}</td>
+          <td class="event-detail">${e.detail}</td>
+        `;
+        body.appendChild(tr);
+      }
+      body.closest(".content-body")?.scrollTo(0, 0);
+    }
+
+    function fillGlobal() {
+      $("enabled").checked = !!config.enabled;
+      $("localRpc").value = config.local?.rpc_url || config.lightpool_rpc_url || "";
+      $("walletPath").value = config.wallet_path || "";
+      $("pollMs").value = config.poll_interval_ms || 1000;
+      $("disputeSec").value = config.dispute_period_seconds || 200;
+      $("castBin").value = config.cast_bin || "cast";
+    }
+
+    function toggleKindFields() {
+      const kind = $("routeKind").value;
+      $("evmFields").classList.toggle("hidden", kind !== "evm");
+      $("lpFields").classList.toggle("hidden", kind !== "lightpool");
+    }
+
+    function openRouteDialog(routeId = null) {
+      creating = !routeId || !config.routes.some((r) => r.id === routeId);
+      editingRouteId = creating ? null : routeId;
+      $("routeId").disabled = !creating;
+      $("dialogTitle").textContent = creating ? "Add route" : `Edit ${routeId}`;
+
+      if (creating) {
+        $("routeId").value = routeId || "";
+        $("routeEnabled").checked = true;
+        $("routeKind").value = "evm";
+        $("localBridgeContract").value = "";
+        $("localLpToken").value = "";
+        $("evmRpc").value = "http://127.0.0.1:8545";
+        $("evmChainId").value = 1337;
+        $("evmBridge").value = "";
+        $("evmToken").value = "";
+        $("evmConf").value = 1;
+        $("evmStart").value = 0;
+        $("lpRpc").value = "http://127.0.0.1:26301";
+        $("lpChainId").value = 9001;
+        $("lpOutbound").value = "";
+        $("lpForeignToken").value = "";
+      } else {
+        const route = config.routes.find((r) => r.id === routeId);
+        if (!route) return;
+        $("routeId").value = route.id;
+        $("routeEnabled").checked = route.enabled;
+        $("routeKind").value = route.foreign.kind;
+        $("localBridgeContract").value = route.local_inbound.bridge_contract || "";
+        $("localLpToken").value = route.local_inbound.lp_token || "";
+        if (route.foreign.kind === "evm") {
+          $("evmRpc").value = route.foreign.rpc_url;
+          $("evmChainId").value = route.foreign.chain_id;
+          $("evmBridge").value = route.foreign.bridge_address;
+          $("evmToken").value = route.foreign.token_address;
+          $("evmConf").value = route.foreign.confirmations;
+          $("evmStart").value = route.foreign.start_block;
+        } else {
+          $("lpRpc").value = route.foreign.rpc_url;
+          $("lpChainId").value = route.foreign.chain_id;
+          $("lpOutbound").value = route.foreign.outbound_bridge_contract;
+          $("lpForeignToken").value = route.foreign.foreign_token;
+        }
+      }
+      toggleKindFields();
+      $("routeDialog").showModal();
+    }
+
+    function buildRouteFromForm() {
+      const kind = $("routeKind").value;
+      const local_inbound = {
+        bridge_contract: $("localBridgeContract").value.trim(),
+        lp_token: $("localLpToken").value.trim(),
+      };
+      let foreign;
+      if (kind === "evm") {
+        foreign = {
+          kind: "evm",
+          rpc_url: $("evmRpc").value.trim(),
+          chain_id: Number($("evmChainId").value),
+          bridge_address: $("evmBridge").value.trim(),
+          token_address: $("evmToken").value.trim(),
+          confirmations: Number($("evmConf").value),
+          start_block: Number($("evmStart").value),
+        };
+      } else {
+        foreign = {
+          kind: "lightpool",
+          rpc_url: $("lpRpc").value.trim(),
+          chain_id: Number($("lpChainId").value),
+          outbound_bridge_contract: $("lpOutbound").value.trim(),
+          foreign_token: $("lpForeignToken").value.trim(),
+        };
+      }
+      return {
+        id: $("routeId").value.trim(),
+        enabled: $("routeEnabled").checked,
+        local_inbound,
+        foreign,
+      };
+    }
+
+    function applyGlobalToConfig() {
+      config.enabled = $("enabled").checked;
+      config.wallet_path = $("walletPath").value.trim();
+      config.poll_interval_ms = Number($("pollMs").value);
+      config.dispute_period_seconds = Number($("disputeSec").value);
+      config.cast_bin = $("castBin").value.trim() || "cast";
+      config.local = config.local || {};
+      config.local.rpc_url = $("localRpc").value.trim();
+      config.lightpool_rpc_url = config.local.rpc_url;
+    }
+
+    async function loadEvents() {
+      const params = new URLSearchParams();
+      if (selectedRouteId) params.set("route_id", selectedRouteId);
+      params.set("limit", "100");
+      const events = await api(`/api/events?${params}`);
+      renderEvents(events);
+    }
+
+    async function loadAll() {
+      await api("/api/health");
+      config = await api("/api/config");
+      status = await api("/api/status");
+      fillGlobal();
+      ensureSelectedRoute();
+      renderTree();
+      await loadEvents();
+    }
+
+    async function saveGlobal() {
+      applyGlobalToConfig();
+      config = await api("/api/config", { method: "PUT", body: JSON.stringify({ config }) });
+      toast("Settings saved");
+      $("settingsDialog").close();
+      status = await api("/api/status");
+      renderTree();
+    }
+
+    async function saveRoute() {
+      const route = buildRouteFromForm();
+      if (!route.id) throw new Error("route id required");
+      if (creating) {
+        await api("/api/routes", { method: "POST", body: JSON.stringify(route) });
+      } else {
+        await api(`/api/routes/${encodeURIComponent(route.id)}`, {
+          method: "PUT",
+          body: JSON.stringify(route),
+        });
+      }
+      $("routeDialog").close();
+      selectedRouteId = route.id;
+      await loadAll();
+      toast(creating ? "Route added" : "Route updated");
+    }
+
+    async function removeSelectedRoute() {
+      if (!selectedRouteId) return;
+      if (!confirm(`Remove route "${selectedRouteId}"?`)) return;
+      await api(`/api/routes/${encodeURIComponent(selectedRouteId)}`, { method: "DELETE" });
+      selectedRouteId = "";
+      await loadAll();
+      toast("Route removed");
+    }
+
+    function scheduleRefresh() {
+      if (refreshTimer) clearInterval(refreshTimer);
+      if (!$("autoRefresh").checked) return;
+      refreshTimer = setInterval(async () => {
+        try {
+          status = await api("/api/status");
+          renderTree();
+          await loadEvents();
+        } catch (_) {}
+      }, 3000);
+    }
+
+    $("routeKind").addEventListener("change", toggleKindFields);
+    $("reloadBtn").addEventListener("click", () => loadAll().catch((e) => toast(e.message, true)));
+    $("settingsBtn").addEventListener("click", () => { fillGlobal(); $("settingsDialog").showModal(); });
+    $("saveGlobalBtn").addEventListener("click", () => saveGlobal().catch((e) => toast(e.message, true)));
+    $("closeSettingsBtn").addEventListener("click", () => $("settingsDialog").close());
+    $("cancelSettingsBtn").addEventListener("click", () => $("settingsDialog").close());
+    $("addRouteBtn").addEventListener("click", () => $("addKindDialog").showModal());
+    $("closeAddKindBtn").addEventListener("click", () => $("addKindDialog").close());
+    $("addEvmBtn").addEventListener("click", () => {
+      $("addKindDialog").close();
+      openRouteDialog(`reth-${Date.now()}`);
+    });
+    $("addLpBtn").addEventListener("click", () => {
+      $("addKindDialog").close();
+      openRouteDialog(`lp-${Date.now()}`);
+      $("routeKind").value = "lightpool";
+      toggleKindFields();
+    });
+    $("editRouteBtn").addEventListener("click", () => openRouteDialog(selectedRouteId));
+    $("removeRouteBtn").addEventListener("click", () => removeSelectedRoute().catch((e) => toast(e.message, true)));
+    $("saveRouteBtn").addEventListener("click", () => saveRoute().catch((e) => toast(e.message, true)));
+    $("cancelRouteBtn").addEventListener("click", () => $("routeDialog").close());
+    $("closeDialogBtn").addEventListener("click", () => $("routeDialog").close());
+    $("autoRefresh").addEventListener("change", scheduleRefresh);
+
+    loadAll().then(scheduleRefresh).catch((e) => toast(e.message, true));
+  </script>
+</body>
+</html>

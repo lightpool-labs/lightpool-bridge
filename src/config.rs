@@ -7,6 +7,8 @@ use std::fs;
 use std::path::Path;
 use thiserror::Error;
 
+use crate::route_config::{BridgeRoute, LocalChainConfig};
+
 #[derive(Debug, Error)]
 pub enum BridgeConfigError {
     #[error("failed to read bridge config '{path}': {source}")]
@@ -35,6 +37,14 @@ pub enum BridgeConfigError {
     },
     #[error("invalid wallet '{path}': {message}")]
     InvalidWallet { path: String, message: String },
+    #[error("invalid bridge config '{path}': {message}")]
+    Validation { path: String, message: String },
+    #[error("failed to write bridge config '{path}': {source}")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +71,10 @@ pub struct BridgeLinkConfig {
     /// Foundry cast binary used to submit EVM txs (request/finalize withdraw).
     #[serde(default = "default_cast_bin")]
     pub cast_bin: String,
+    #[serde(default)]
+    pub local: LocalChainConfig,
+    #[serde(default)]
+    pub routes: Vec<BridgeRoute>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +119,8 @@ impl Default for BridgeLinkConfig {
             poll_interval_ms: default_poll_interval_ms(),
             start_block: 0,
             cast_bin: default_cast_bin(),
+            local: LocalChainConfig::default(),
+            routes: Vec::new(),
         }
     }
 }
@@ -116,10 +132,14 @@ impl BridgeLinkConfig {
             path: path_str.clone(),
             source,
         })?;
-        serde_json::from_slice(&data).map_err(|source| BridgeConfigError::Parse {
-            path: path_str,
-            source,
-        })
+        let mut config: Self = serde_json::from_slice(&data).map_err(|source| {
+            BridgeConfigError::Parse {
+                path: path_str,
+                source,
+            }
+        })?;
+        config.normalize_routes();
+        Ok(config)
     }
 
     pub fn load_wallet(&self) -> Result<(PublicKey, SecretKey), BridgeConfigError> {

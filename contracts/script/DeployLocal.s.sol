@@ -15,11 +15,12 @@ contract DeployLocal is Script {
     function run() external {
         address deployer = msg.sender;
         address validator = vm.envOr("VALIDATOR_ETH", deployer);
+        uint64 validatorStake = uint64(vm.envOr("VALIDATOR_STAKE", uint256(100)));
 
         address[] memory validators = new address[](1);
         validators[0] = validator;
         uint64[] memory stakes = new uint64[](1);
-        stakes[0] = 100;
+        stakes[0] = validatorStake;
         Committee memory genesis =
             Committee({epoch: 0, validators: validators, stakes: stakes});
 

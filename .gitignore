@@ -4,4 +4,6 @@ contracts/out/
 contracts/lib/
 contracts/broadcast/
 .env
+bridge-config.json
+/store/
 *.log
