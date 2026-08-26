@@ -60,9 +60,13 @@ Stop running processes first (**Ctrl+C**, reverse start order): Terminal C (brid
 Run after **Env**, in a separate step (skip if binaries already built):
 
 ```bash
+cd "$WORK/lightpool" && cargo build --release
 cd "$NODE" && cargo build --release && source ./env.sh
 cd "$BRIDGE" && cargo build --release
+export PATH="$WORK/lightpool/target/release:$PATH"
 ```
+
+Bootstrap uses `lightpool/target/release/lightpool` when present (includes `create-outbound-bridge` and `outbound-lock`).
 
 ## A — Foreign LightPool node
 
