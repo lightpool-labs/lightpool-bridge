@@ -1,13 +1,13 @@
 // Copyright (c) LightPool Labs
 // Author: xiaoyu1998
 
-use crate::actions::{GET_CONFIG_ACTION, GET_LOCK_ACTION, GET_WITHDRAW_ACTION};
+use crate::actions::{GET_CONFIG_ACTION, GET_OUTBOUND_WITHDRAW_ACTION, GET_WITHDRAW_ACTION};
 use lightpool_crypto::{PublicKey, SecretKey, Signature};
 use lightpool_types::address_type::Address;
 use lightpool_types::contract::ContractAddress;
 use lightpool_types::effects::TransactionReceipt;
 use lightpool_types::module_types::bridge::{
-    BridgeConfig, BridgeWithdrawRecord, OutboundBridgeConfig, OutboundLockRecord,
+    BridgeConfig, BridgeWithdrawRecord, OutboundBridgeConfig, OutboundWithdrawRecord,
 };
 use lightpool_types::transaction::{Action, SignedTransaction, Transaction};
 use lightpool_types::Committee;
@@ -204,11 +204,11 @@ impl LightpoolClient {
             .map_err(|e| anyhow::anyhow!("decode outbound bridge config: {}", e))
     }
 
-    pub async fn fetch_outbound_lock(
+    pub async fn fetch_outbound_withdraw(
         &self,
         contract: ContractAddress,
         nonce: u64,
-    ) -> anyhow::Result<OutboundLockRecord> {
+    ) -> anyhow::Result<OutboundWithdrawRecord> {
         #[derive(Serialize)]
         struct Params {
             nonce: u64,
@@ -218,12 +218,13 @@ impl LightpoolClient {
                 contract,
                 Action::new(
                     contract,
-                    GET_LOCK_ACTION,
+                    GET_OUTBOUND_WITHDRAW_ACTION,
                     bincode::serialize(&Params { nonce })?,
                 ),
             )
             .await?;
-        bincode::deserialize(&bytes).map_err(|e| anyhow::anyhow!("decode outbound lock: {}", e))
+        bincode::deserialize(&bytes)
+            .map_err(|e| anyhow::anyhow!("decode outbound withdraw: {}", e))
     }
 
     async fn post_json(&self, body: &Value) -> anyhow::Result<Value> {

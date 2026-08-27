@@ -5,12 +5,12 @@ No Reth or Foundry required. Two independent LightPool validators act as **local
 ```text
 ~/work/lightpool-labs/
 ├── lightpool-node/
-│   ├── store/               → local chain (Terminal B)
-│   ├── store-foreign/       → foreign chain (Terminal A)
+│   ├── store/               → local chain (Terminal 2)
+│   ├── store-foreign/       → foreign chain (Terminal 1)
 │   └── scripts/event-contract-setup/
 │       ├── 01_lp_foreign_bootstrap.py
 │       └── .env.lp-foreign   → written by bootstrap
-└── lightpool-bridge/        → Terminal C
+└── lightpool-bridge/        → Terminal 3
 ```
 
 Fresh checkout:
@@ -21,16 +21,16 @@ git clone https://github.com/lightpool-labs/lightpool-node.git
 git clone https://github.com/lightpool-labs/lightpool-bridge.git
 ```
 
-Four terminals (A–D). Run **Env** once per terminal.
+Four terminals (1–4). Run **Env** once per terminal.
 
-**Full retest from zero:** stop C → B → A, run **Clear data** at the end of this doc, then **Build** → A → B → D bootstrap → C → deposit → withdraw.
+**Full retest from zero:** stop 3 → 2 → 1, run **Clear data** at the end of this doc, then **Build** → 1 → 2 → 4 bootstrap → 3 → deposit → withdraw.
 
 ## Flow
 
 | Direction | User action | Bridge |
 | --- | --- | --- |
-| **Deposit** (foreign → local) | `outbound-lock` on foreign node | `foreign_lock_seen` → `confirm_dep` on local |
-| **Withdraw** (local → foreign) | `bridge-withdraw` on local node | `withdraw_seen` → `release` on foreign |
+| **Deposit** (foreign → local) | `outbound-withdraw` on foreign node | `deposit_seen` → `confirm_dep` on local |
+| **Withdraw** (local → foreign) | `bridge-withdraw` on local node | `withdraw_seen` → `deposit` on foreign |
 
 ## Env
 
@@ -53,22 +53,18 @@ export AMOUNT=100000000
 
 ## Reset — clean slate
 
-Stop running processes first (**Ctrl+C**, reverse start order): Terminal C (bridge) → B (local node) → A (foreign node). Then run **Clear data** at the end of this file (after **Env**).
+Stop running processes first (**Ctrl+C**, reverse start order): Terminal 3 (bridge) → 2 (local node) → 1 (foreign node). Then run **Clear data** at the end of this file (after **Env**).
 
 ## Build
 
-Run after **Env**, in a separate step (skip if binaries already built):
+Run after **Env**, in a separate step (skip if binaries already built). The `lightpool` CLI ships with **lightpool-node** (`bin/lightpool` after `cargo build --release`).
 
 ```bash
-cd "$WORK/lightpool" && cargo build --release
 cd "$NODE" && cargo build --release && source ./env.sh
 cd "$BRIDGE" && cargo build --release
-export PATH="$WORK/lightpool/target/release:$PATH"
 ```
 
-Bootstrap uses `lightpool/target/release/lightpool` when present (includes `create-outbound-bridge` and `outbound-lock`).
-
-## A — Foreign LightPool node
+## 1 — Foreign LightPool node
 
 Uses RPC `:27300`, separate wallet and store. Create wallet and **validator.json** with non-default mempool/consensus ports before first start (otherwise defaults collide with the local node).
 
@@ -97,7 +93,7 @@ lightpool node --role validator \
   --ws-listen-addr 0.0.0.0:27400
 ```
 
-## B — Local LightPool node
+## 2 — Local LightPool node
 
 Default ports (`:26300` RPC). Run from `$NODE` so the default store is `$NODE/store`.
 
@@ -108,9 +104,9 @@ lightpool create-wallet --force
 lightpool node --role validator
 ```
 
-## D — Bootstrap
+## 4 — Bootstrap
 
-Needs A + B running. Writes `$CFG` and `$ENV_LP`.
+Needs 1 + 2 running. Writes `$CFG` and `$ENV_LP`.
 
 ```bash
 cd "$NODE/scripts/event-contract-setup"
@@ -119,7 +115,7 @@ python3 01_lp_foreign_bootstrap.py --phase all
 
 Phases (optional splits): `local-init` (inbound bridge on local), `foreign-setup` (USDT + outbound bridge on foreign), `config` (rewrite `$CFG` from env).
 
-## C — Bridge
+## 3 — Bridge
 
 ```bash
 "$BRIDGE/target/release/lightpool-bridge" --config "$CFG"
@@ -129,9 +125,9 @@ Admin UI: http://127.0.0.1:8787
 
 Restart this process after every bootstrap so it loads the new `$CFG`.
 
-## D — Deposit
+## 4 — Deposit
 
-Lock foreign USDT; bridge mints LP USDT on the local chain.
+Withdraw foreign USDT into bridge custody; bridge mints LP USDT on the local chain.
 
 ```bash
 source "$ENV_LP"
@@ -139,7 +135,7 @@ source "$ENV_LP"
 LOCAL_RECIPIENT=$(lightpool --rpc-url "$LP_RPC" --wallet-path "$HOME/.lightpool/wallet.json" address \
   | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
 
-lightpool --rpc-url "$LP_FOREIGN_RPC" --wallet-path "$FOREIGN_WALLET" outbound-lock \
+lightpool --rpc-url "$LP_FOREIGN_RPC" --wallet-path "$FOREIGN_WALLET" outbound-withdraw \
   --bridge-address "$OUTBOUND_BRIDGE" \
   --token-address "$FOREIGN_USDT" \
   --amount "$AMOUNT" \
@@ -148,11 +144,11 @@ lightpool --rpc-url "$LP_FOREIGN_RPC" --wallet-path "$FOREIGN_WALLET" outbound-l
 lightpool --rpc-url "$LP_RPC" balance --token-address "$LOCAL_LP_USDT" --account "$LOCAL_RECIPIENT"
 ```
 
-Wait for Terminal C `confirm_dep_ok` before checking balance.
+Wait for Terminal 3 `confirm_dep_ok` before checking balance.
 
-## D — Withdraw
+## 4 — Withdraw
 
-Burn local LP USDT; bridge releases foreign USDT on the foreign chain.
+Burn local LP USDT; bridge deposits foreign USDT to the user on the foreign chain.
 
 ```bash
 source "$ENV_LP"
@@ -161,18 +157,19 @@ FOREIGN_RECIPIENT=$(lightpool --rpc-url "$LP_FOREIGN_RPC" --wallet-path "$FOREIG
   | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
 
 lightpool --rpc-url "$LP_RPC" bridge-withdraw \
+  --bridge-address "$LOCAL_INBOUND_BRIDGE" \
   --token-address "$LOCAL_LP_USDT" \
   --amount 50 \
-  --evm-recipient "$FOREIGN_RECIPIENT"
+  --foreign-recipient "$FOREIGN_RECIPIENT"
 
 lightpool --rpc-url "$LP_FOREIGN_RPC" balance --token-address "$FOREIGN_USDT" --account "$FOREIGN_RECIPIENT"
 ```
 
-Wait for Terminal C foreign release / `withdraw_seen` completion before checking foreign balance.
+Wait for Terminal 3 `deposit_ok` before checking foreign balance.
 
 ## Clear data
 
-Stop C → B → A first. Run **Env**, then:
+Stop 3 → 2 → 1 first. Run **Env**, then:
 
 ```bash
 rm -rf "$NODE/store" "$NODE/store-foreign" \

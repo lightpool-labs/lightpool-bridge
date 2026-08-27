@@ -5,7 +5,9 @@ use lightpool_types::contract::ContractAddress;
 use lightpool_types::module::Module;
 
 pub fn default_inbound_contract() -> ContractAddress {
-    ContractAddress::new(Module::BRIDGE, [0u8; 7])
+    let mut rest = [0u8; 7];
+    rest.copy_from_slice(&1u64.to_be_bytes()[1..]);
+    ContractAddress::new(Module::BRIDGE, rest)
 }
 
 pub fn parse_contract_address(raw: &str) -> anyhow::Result<ContractAddress> {

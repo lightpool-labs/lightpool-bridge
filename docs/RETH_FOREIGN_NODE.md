@@ -5,10 +5,10 @@ Foundry required. Parent directory is `lightpool-labs`. Both repos live inside i
 ```text
 ~/work/lightpool-labs/
 ├── lightpool-node/
-│   ├── tools/reth/          → Terminal A
+│   ├── tools/reth/          → Terminal 1
 │   ├── store/               → LightPool chain data (created on first run)
 │   └── scripts/event-contract-setup/
-└── lightpool-bridge/        → Terminal C
+└── lightpool-bridge/        → Terminal 3
 ```
 
 Fresh checkout:
@@ -19,9 +19,9 @@ git clone https://github.com/lightpool-labs/lightpool-node.git
 git clone https://github.com/lightpool-labs/lightpool-bridge.git
 ```
 
-Four terminals (A–D). Run **Env** once per terminal.
+Four terminals (1–4). Run **Env** once per terminal.
 
-**Full retest from zero:** stop C → B → A, run **Clear data** at the end of this doc, then **Build** → A → B → D deploy → C → D init → deposit → withdraw.
+**Full retest from zero:** stop 3 → 2 → 1, run **Clear data** at the end of this doc, then **Build** → 1 → 2 → 4 deploy → 3 → 4 create → add route → deposit → withdraw.
 
 ## Env
 
@@ -44,13 +44,13 @@ export AMOUNT=100000000
 
 ## Reset — clean slate
 
-Stop running processes first (**Ctrl+C**, reverse start order): Terminal C (bridge) → B (LightPool) → A (Reth). Then run **Clear data** at the end of this file (after **Env**).
+Stop running processes first (**Ctrl+C**, reverse start order): Terminal 3 (bridge) → 2 (LightPool) → 1 (Reth). Then run **Clear data** at the end of this file (after **Env**).
 
 After reset, continue with **Build** and the terminal flow below. LP USDT after a fresh `init` is expected at `0x0200000000000001`.
 
 ## Build
 
-Run after **Env**, in a separate step (skip if binaries already built):
+Run after **Env**, in a separate step (skip if binaries already built). The `lightpool` CLI ships with **lightpool-node** (`bin/lightpool` after `cargo build --release`).
 
 ```bash
 "$NODE/tools/reth/download.sh"
@@ -58,7 +58,7 @@ cd "$NODE" && cargo build --release && source ./env.sh
 cd "$BRIDGE" && cargo build --release
 ```
 
-## A — Reth
+## 1 — Reth
 
 Reth must expose WebSocket on `:8546` (default with `run-dev.sh`). The bridge subscribes to `DepositInitiated` logs over WS; config `evm_rpc_url` stays `http://127.0.0.1:8545`.
 
@@ -66,7 +66,7 @@ Reth must expose WebSocket on `:8546` (default with `run-dev.sh`). The bridge su
 "$NODE/tools/reth/run-dev.sh"
 ```
 
-## B — LightPool
+## 2 — LightPool
 
 Run from `$NODE` so the default store is `$NODE/store`.
 
@@ -77,9 +77,9 @@ lightpool create-wallet --force
 lightpool node --role validator
 ```
 
-## D — Deploy
+## 4 — Deploy
 
-Needs A + B running.
+Needs 1 + 2 running.
 
 ```bash
 cd "$NODE/scripts/event-contract-setup"
@@ -88,7 +88,7 @@ python3 00_bridge_bootstrap.py --phase deploy
 
 Writes `$CFG` and `$ENV_BRIDGE`. Deploy reads validator stake from LightPool `getCommitteeInfo` (single-node default `100`).
 
-## C — Bridge
+## 3 — Bridge
 
 ```bash
 "$BRIDGE/target/release/lightpool-bridge" --config "$CFG"
@@ -98,16 +98,22 @@ Admin UI: http://127.0.0.1:8787
 
 Restart this process after every **deploy** so it loads the new `$CFG`.
 
-## D — Init
+## 4 — Create
 
-Needs A + B + C running.
+Needs 1 + 2 + 3 running.
 
 ```bash
 cd "$NODE/scripts/event-contract-setup"
-python3 00_bridge_bootstrap.py --phase init
+python3 00_bridge_bootstrap.py --phase create
 ```
 
-## D — Deposit
+Add the EVM route in lightpool-bridge Admin UI (see [`LOCAL_BRIDGE_RUNBOOK.md`](LOCAL_BRIDGE_RUNBOOK.md)), then optionally:
+
+```bash
+python3 00_bridge_bootstrap.py --phase fund
+```
+
+## 4 — Deposit
 
 ```bash
 source "$ENV_BRIDGE"
@@ -123,24 +129,25 @@ cast send "$BRIDGE" "deposit(uint64,address)" "$AMOUNT" "$LP_RECIPIENT" \
 lightpool --rpc-url "$LP_RPC" balance --token-address "$LP_USDT" --account "$LP_RECIPIENT"
 ```
 
-Wait for Terminal C `confirm_dep_ok` before checking balance.
+Wait for Terminal 3 `confirm_dep_ok` before checking balance.
 
-## D — Withdraw
+## 4 — Withdraw
 
 ```bash
 source "$ENV_BRIDGE"
 
 lightpool --rpc-url "$LP_RPC" bridge-withdraw \
-  --token-address "$LP_USDT" --amount 50 --evm-recipient "$RECV"
+  --bridge-address "$INBOUND_BRIDGE" \
+  --token-address "$LP_USDT" --amount 50 --foreign-recipient "$RECV"
 
 cast call "$ETH_USDT" "balanceOf(address)(uint256)" "$RECV" --rpc-url "$RETH_RPC"
 ```
 
-Wait for Terminal C `evm_finalized` before checking balance.
+Wait for Terminal 3 `evm_finalized` before checking balance.
 
 ## Clear data
 
-Stop C → B → A first. Run **Env**, then:
+Stop 3 → 2 → 1 first. Run **Env**, then:
 
 ```bash
 rm -rf "$NODE/tools/reth/data/dev" "$NODE/store" && rm -f "$HOME/.lightpool/wallet.json" "$HOME/.lightpool/validator.json" "$CFG" "$ENV_BRIDGE"

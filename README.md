@@ -25,6 +25,7 @@ Standalone off-chain bridge process for LightPool, plus EVM contracts under `con
 
 Local setup guides:
 
+- [`docs/LOCAL_BRIDGE_RUNBOOK.md`](docs/LOCAL_BRIDGE_RUNBOOK.md) — **unified** local + Reth + foreign LightPool, Add route params, deposit/withdraw
 - [`docs/RETH_FOREIGN_NODE.md`](docs/RETH_FOREIGN_NODE.md) — Reth (EVM) as foreign node
 - [`docs/LIGHTPOOL_FOREIGN_NODE.md`](docs/LIGHTPOOL_FOREIGN_NODE.md) — second LightPool node as foreign node
 
@@ -35,27 +36,28 @@ export WORK=~/work/lightpool-labs
 export NODE=$WORK/lightpool-node
 export BRIDGE=$WORK/lightpool-bridge
 
-# A — Reth
+# 1 — Reth
 $NODE/tools/reth/run-dev.sh
 
-# B — LightPool
+# 2 — LightPool
 cd $NODE && source ./env.sh && lightpool node --role validator
 
-# D — Deploy (needs A + B)
+# 4 — Deploy (needs 1 + 2)
 cd $NODE/scripts/event-contract-setup
 python3 00_bridge_bootstrap.py --phase deploy
 
-# C — Bridge process
+# 3 — Bridge process
 $BRIDGE/target/release/lightpool-bridge --config $BRIDGE/bridge-config.json
 
-# D — Init
-python3 00_bridge_bootstrap.py --phase init
+# 4 — Create inbound bridge
+python3 00_bridge_bootstrap.py --phase create
 ```
 
 ## Layout
 
 - `src/` — Rust binary `lightpool-bridge`
 - `contracts/` — Foundry EVM contracts and deploy scripts
+- `docs/LOCAL_BRIDGE_RUNBOOK.md` — unified local + Reth + LP-foreign runbook
 - `docs/RETH_FOREIGN_NODE.md` — Reth + LightPool + bridge runbook
 - `docs/LIGHTPOOL_FOREIGN_NODE.md` — two LightPool nodes + bridge runbook
 - `bridge.config.example.json` — config template

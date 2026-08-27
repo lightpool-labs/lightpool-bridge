@@ -30,6 +30,7 @@ ethabi = "18"
 ethereum-types = "0.14"
 k256 = { version = "0.13", features = ["ecdsa"] }
 axum = "0.7"
+url = "2"
 
 lightpool-crypto = { path = "../lightpool-crypto" }
 lightpool-types = { path = "../lightpool/crates/lightpool-types" }

@@ -30,10 +30,9 @@ pub enum BridgeEventKind {
     EvmRequestFailed,
     EvmFinalized,
     EvmFinalizeFailed,
-    ForeignLockSeen,
-    ReleaseSubmitted,
-    ReleaseOk,
-    ReleaseFailed,
+    DepositSubmitted,
+    DepositOk,
+    DepositFailed,
     ConfigUpdated,
     RouteReloaded,
 }

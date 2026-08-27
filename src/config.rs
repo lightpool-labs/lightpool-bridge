@@ -53,7 +53,7 @@ pub struct BridgeLinkConfig {
     pub enabled: bool,
     #[serde(default)]
     pub wallet_path: String,
-    #[serde(default = "default_evm_rpc")]
+    #[serde(default)]
     pub evm_rpc_url: String,
     #[serde(default)]
     pub evm_bridge_address: String,
@@ -82,10 +82,6 @@ struct WalletFile {
     private_key: String,
 }
 
-fn default_evm_rpc() -> String {
-    "http://127.0.0.1:8545".to_string()
-}
-
 fn default_lightpool_rpc() -> String {
     "http://127.0.0.1:26300".to_string()
 }
@@ -111,7 +107,7 @@ impl Default for BridgeLinkConfig {
         Self {
             enabled: false,
             wallet_path: String::new(),
-            evm_rpc_url: default_evm_rpc(),
+            evm_rpc_url: String::new(),
             evm_bridge_address: String::new(),
             evm_confirmations: default_confirmations(),
             lightpool_rpc_url: default_lightpool_rpc(),

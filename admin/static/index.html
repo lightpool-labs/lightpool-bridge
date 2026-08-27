@@ -77,6 +77,12 @@
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
       gap: 0.75rem;
     }
+    .local-inbound-row {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
     label {
       display: flex;
       flex-direction: column;
@@ -208,8 +214,10 @@
             <option value="lightpool">lightpool (foreign LP)</option>
           </select>
         </label>
-        <label>Local inbound bridge contract <input id="localBridgeContract" placeholder="optional" /></label>
-        <label>Local LP token <input id="localLpToken" placeholder="optional" /></label>
+        <div class="local-inbound-row">
+          <label>Local inbound bridge contract <input id="localBridgeContract" placeholder="0x0600000000000001" /></label>
+          <label>Local LP token <input id="localLpToken" placeholder="0x0200000000000001" /></label>
+        </div>
       </div>
       <div id="evmFields" class="grid" style="margin-top:0.75rem">
         <label>EVM RPC <input id="evmRpc" /></label>
@@ -413,14 +421,14 @@
         $("routeKind").value = "evm";
         $("localBridgeContract").value = "";
         $("localLpToken").value = "";
-        $("evmRpc").value = "http://127.0.0.1:8545";
-        $("evmChainId").value = 1337;
+        $("evmRpc").value = "";
+        $("evmChainId").value = "";
         $("evmBridge").value = "";
         $("evmToken").value = "";
         $("evmConf").value = 1;
         $("evmStart").value = 0;
-        $("lpRpc").value = "http://127.0.0.1:26301";
-        $("lpChainId").value = 9001;
+        $("lpRpc").value = "";
+        $("lpChainId").value = "";
         $("lpOutbound").value = "";
         $("lpForeignToken").value = "";
       } else {
@@ -535,7 +543,7 @@
       $("routeDialog").close();
       selectedRouteId = route.id;
       await loadAll();
-      toast(creating ? "Route added" : "Route updated");
+      toast(creating ? "Route added and loaded" : "Route updated");
     }
 
     async function removeSelectedRoute() {
@@ -569,7 +577,7 @@
     $("closeAddKindBtn").addEventListener("click", () => $("addKindDialog").close());
     $("addEvmBtn").addEventListener("click", () => {
       $("addKindDialog").close();
-      openRouteDialog(`reth-${Date.now()}`);
+      openRouteDialog(`evm-${Date.now()}`);
     });
     $("addLpBtn").addEventListener("click", () => {
       $("addKindDialog").close();

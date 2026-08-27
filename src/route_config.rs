@@ -76,27 +76,6 @@ impl Default for LocalChainConfig {
     }
 }
 
-impl BridgeRoute {
-    pub fn legacy_reth(id: &str, cfg: &BridgeLinkConfig) -> Self {
-        Self {
-            id: id.to_string(),
-            enabled: true,
-            local_inbound: LocalInboundConfig {
-                bridge_contract: String::new(),
-                lp_token: String::new(),
-            },
-            foreign: ForeignLeg::Evm {
-                rpc_url: cfg.evm_rpc_url.clone(),
-                chain_id: 1337,
-                bridge_address: cfg.evm_bridge_address.clone(),
-                token_address: String::new(),
-                confirmations: cfg.evm_confirmations,
-                start_block: cfg.start_block,
-            },
-        }
-    }
-}
-
 pub fn validate_config(cfg: &BridgeLinkConfig) -> Result<(), String> {
     if cfg.routes.is_empty() {
         return Ok(());
@@ -154,35 +133,6 @@ impl BridgeLinkConfig {
         }
         if self.lightpool_rpc_url.is_empty() {
             self.lightpool_rpc_url = self.local.rpc_url.clone();
-        }
-
-        if self.routes.is_empty() && !self.evm_bridge_address.trim().is_empty() {
-            self.routes.push(BridgeRoute::legacy_reth("reth-default", self));
-        }
-
-        if let Some(route) = self
-            .routes
-            .iter()
-            .find(|r| r.enabled)
-            .or_else(|| self.routes.first())
-        {
-            if let ForeignLeg::Evm {
-                rpc_url,
-                bridge_address,
-                confirmations,
-                start_block,
-                ..
-            } = &route.foreign
-            {
-                if self.evm_rpc_url.is_empty() {
-                    self.evm_rpc_url = rpc_url.clone();
-                }
-                if self.evm_bridge_address.is_empty() {
-                    self.evm_bridge_address = bridge_address.clone();
-                }
-                self.evm_confirmations = *confirmations;
-                self.start_block = *start_block;
-            }
         }
     }
 

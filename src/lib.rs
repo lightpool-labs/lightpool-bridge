@@ -9,6 +9,7 @@ pub mod evm_ws;
 pub mod events;
 pub mod handle;
 pub mod lp;
+pub mod lp_ws;
 pub mod messages;
 pub mod route_config;
 pub mod router;

@@ -52,7 +52,11 @@ impl BridgeHandle {
         &self,
         config: BridgeLinkConfig,
     ) -> Result<BridgeLinkConfig, BridgeConfigError> {
-        self.inner.update_config(config).await
+        let config = self.inner.update_config(config).await?;
+        self.inner.sync_evm_subscribers().await;
+        self.inner.sync_lp_foreign_subscribers().await;
+        self.inner.sync_lp_local_subscribers().await;
+        Ok(config)
     }
 
     pub async fn status(&self) -> BridgeStatusResponse {
@@ -94,9 +98,9 @@ pub struct RouteStatusSnapshot {
     pub next_withdraw_nonce: Option<u64>,
     pub last_scanned_block: u64,
     pub last_withdraw_nonce_scanned: u64,
-    pub last_lock_nonce_scanned: u64,
+    pub last_foreign_withdraw_nonce_scanned: u64,
     pub pending_deposits: u64,
     pub pending_evm_withdraws: u64,
-    pub pending_lp_releases: u64,
+    pub pending_lp_deposits: u64,
     pub seen_deposits: u64,
 }

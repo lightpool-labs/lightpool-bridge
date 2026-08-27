@@ -9,42 +9,5 @@
     "rpc_url": "http://127.0.0.1:26300",
     "chain_id": 1
   },
-  "routes": [
-    {
-      "id": "reth-usdt",
-      "enabled": true,
-      "local_inbound": {
-        "bridge_contract": "0x0600000000000000",
-        "lp_token": ""
-      },
-      "foreign": {
-        "kind": "evm",
-        "rpc_url": "http://127.0.0.1:8545",
-        "chain_id": 1337,
-        "bridge_address": "0x0000000000000000000000000000000000000000",
-        "token_address": "0x0000000000000000000000000000000000000000",
-        "confirmations": 1,
-        "start_block": 0
-      }
-    },
-    {
-      "id": "foreign-lp-usdt",
-      "enabled": false,
-      "local_inbound": {
-        "bridge_contract": "0x0600000000000001",
-        "lp_token": ""
-      },
-      "foreign": {
-        "kind": "lightpool",
-        "rpc_url": "http://127.0.0.1:26301",
-        "chain_id": 2,
-        "outbound_bridge_contract": "0x0800000000000001",
-        "foreign_token": "0x0000000000000000000000000000000000000000"
-      }
-    }
-  ],
-  "evm_rpc_url": "http://127.0.0.1:8545",
-  "evm_bridge_address": "0x0000000000000000000000000000000000000000",
-  "evm_confirmations": 1,
-  "start_block": 0
+  "routes": []
 }
