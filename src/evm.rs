@@ -137,6 +137,30 @@ fn bytes32_hex(b: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(b))
 }
 
+pub async fn eth_block_number(rpc: &str) -> Result<u64> {
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .post(rpc)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_blockNumber",
+            "params": [],
+        }))
+        .send()
+        .await
+        .context("eth_blockNumber request failed")?
+        .json()
+        .await
+        .context("eth_blockNumber response parse failed")?;
+    let hex = resp
+        .get("result")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("eth_blockNumber missing result"))?;
+    u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+        .map_err(|err| anyhow!("invalid eth_blockNumber {hex}: {err}"))
+}
+
 pub async fn cast_request_withdraw(
     cast_bin: &str,
     rpc: &str,

@@ -126,8 +126,6 @@ async fn foreign_subscribe_loop(
         state.route_id, ws_url
     );
 
-    router.poll_foreign_withdraws(state, route_def).await?;
-
     let outbound = parse_contract_address(outbound_bridge_contract)?;
     let mut ws = connect_ws(&ws_url).await?;
     subscribe_receipt_blocks(&mut ws).await?;
@@ -167,8 +165,6 @@ async fn local_subscribe_loop(
         "Route {} subscribing to local inbound withdraws via WebSocket {}",
         state.route_id, ws_url
     );
-
-    router.poll_local_withdrawals(state, route_def).await?;
 
     let mut ws = connect_ws(&ws_url).await?;
     subscribe_receipt_blocks(&mut ws).await?;

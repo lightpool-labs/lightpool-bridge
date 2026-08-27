@@ -50,8 +50,6 @@ pub enum BridgeConfigError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeLinkConfig {
     #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
     pub wallet_path: String,
     #[serde(default)]
     pub evm_rpc_url: String,
@@ -61,13 +59,6 @@ pub struct BridgeLinkConfig {
     pub evm_confirmations: u64,
     #[serde(default = "default_lightpool_rpc")]
     pub lightpool_rpc_url: String,
-    #[serde(default = "default_dispute_period_seconds")]
-    pub dispute_period_seconds: u64,
-    #[serde(default = "default_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-    /// Inclusive start block for eth_getLogs; 0 means latest - confirmations.
-    #[serde(default)]
-    pub start_block: u64,
     /// Foundry cast binary used to submit EVM txs (request/finalize withdraw).
     #[serde(default = "default_cast_bin")]
     pub cast_bin: String,
@@ -90,14 +81,6 @@ fn default_confirmations() -> u64 {
     1
 }
 
-fn default_dispute_period_seconds() -> u64 {
-    200
-}
-
-fn default_poll_interval_ms() -> u64 {
-    1_000
-}
-
 fn default_cast_bin() -> String {
     "cast".to_string()
 }
@@ -105,15 +88,11 @@ fn default_cast_bin() -> String {
 impl Default for BridgeLinkConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             wallet_path: String::new(),
             evm_rpc_url: String::new(),
             evm_bridge_address: String::new(),
             evm_confirmations: default_confirmations(),
             lightpool_rpc_url: default_lightpool_rpc(),
-            dispute_period_seconds: default_dispute_period_seconds(),
-            poll_interval_ms: default_poll_interval_ms(),
-            start_block: 0,
             cast_bin: default_cast_bin(),
             local: LocalChainConfig::default(),
             routes: Vec::new(),

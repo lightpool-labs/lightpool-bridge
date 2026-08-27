@@ -24,10 +24,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::actions::{CONFIRM_DEP_ACTION, DEPOSIT_ACTION};
 use crate::config::{BridgeConfigError, BridgeLinkConfig};
-use crate::events::{BridgeEventKind, BridgeEventLevel, EventStore};
+use crate::events::{events_db_path, BridgeEventKind, BridgeEventLevel, EventStore};
 use crate::handle::RouteStatusSnapshot;
 use crate::evm::{
-    cast_finalize_withdraw, cast_request_withdraw, eth_sign_digest, request_withdraw_digest,
+    cast_finalize_withdraw, cast_request_withdraw, eth_block_number, eth_sign_digest,
+    request_withdraw_digest,
     secret_key_hex, withdraw_id, EthSignature, EvmCommittee,
 };
 use crate::lp::LightpoolClient;
@@ -38,6 +39,9 @@ use crate::util::{
     parse_evm_address,
     topic_address, topic_u64, u64_from_word,
 };
+
+const EVM_WITHDRAW_MAINTENANCE_MS: u64 = 1_000;
+const LEADER_ROTATION_SECONDS: u64 = 200;
 
 #[derive(Debug, Serialize)]
 struct ConfirmDepositParams {
@@ -67,7 +71,7 @@ struct PendingEvmWithdraw {
     id: [u8; 32],
     signature: EthSignature,
     requested: bool,
-    requested_at: Option<std::time::Instant>,
+    requested_block: Option<u64>,
     finalized: bool,
     failed: bool,
 }
@@ -122,7 +126,10 @@ impl BridgeRouter {
             ))
         );
         let local = Arc::new(RwLock::new(LightpoolClient::new(config.local.rpc_url.clone())));
-        let events = EventStore::new();
+        let events_db = events_db_path(&config_path);
+        let events = EventStore::open(&events_db)
+            .map_err(|err| anyhow::anyhow!("open events db {}: {err}", events_db.display()))?;
+        info!("Bridge events database: {}", events_db.display());
         let routes = Arc::new(RwLock::new(Self::build_route_states(&config, &[])));
         Ok(Self {
             config_path,
@@ -600,10 +607,7 @@ impl BridgeRouter {
 
         let evm_cancel = cancel.child_token();
         if self.has_enabled_evm_routes().await {
-            info!(
-                "EVM routes enabled: maintenance poll every {}ms (finalize withdraw only)",
-                self.config.read().await.poll_interval_ms.max(100)
-            );
+            info!("EVM routes enabled: withdraw maintenance active");
             let router = Arc::clone(&self);
             let evm_token = evm_cancel.clone();
             tokio::spawn(async move {
@@ -643,11 +647,8 @@ impl BridgeRouter {
     }
 
     async fn run_evm_maintenance(self: Arc<Self>, cancel: CancellationToken) {
+        let interval = Duration::from_millis(EVM_WITHDRAW_MAINTENANCE_MS);
         loop {
-            let interval = {
-                let config = self.config.read().await;
-                Duration::from_millis(config.poll_interval_ms.max(100))
-            };
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = tokio::time::sleep(interval) => {
@@ -738,51 +739,6 @@ impl BridgeRouter {
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("route {} inbound config not loaded", state.route_id))
-    }
-
-    pub(crate) async fn poll_local_withdrawals(
-        &self,
-        state: &RouteState,
-        route_def: &BridgeRoute,
-    ) -> anyhow::Result<()> {
-        self.prepare_route(state, route_def).await;
-        let bridge_cfg = match self.require_route_config(state).await {
-            Ok(cfg) => cfg,
-            Err(_) => return Ok(()),
-        };
-        let contract = inbound_contract_for(route_def);
-        let next = bridge_cfg.next_withdraw_nonce;
-        if next <= 1 {
-            return Ok(());
-        }
-        let mut last = state.last_withdraw_nonce.load(Ordering::Relaxed);
-        while last + 1 < next {
-            let nonce = last + 1;
-            match self
-                .local
-                .read()
-                .await
-                .fetch_withdraw_record(contract, nonce)
-                .await
-            {
-                Ok(record) => {
-                    if record.status == BridgeWithdrawStatus::Pending {
-                        self.handle_local_withdraw(state, route_def, &bridge_cfg, record)
-                            .await?;
-                    }
-                    last = nonce;
-                    state.last_withdraw_nonce.store(last, Ordering::Relaxed);
-                }
-                Err(err) => {
-                    debug!(
-                        "Route {} withdraw {} not ready: {}",
-                        state.route_id, nonce, err
-                    );
-                    break;
-                }
-            }
-        }
-        Ok(())
     }
 
     async fn handle_local_withdraw(
@@ -892,7 +848,7 @@ impl BridgeRouter {
                 id,
                 signature,
                 requested: false,
-                requested_at: None,
+                requested_block: None,
                 finalized: false,
                 failed: false,
             },
@@ -974,7 +930,7 @@ impl BridgeRouter {
         if keys.is_empty() {
             return true;
         }
-        let dispute = self.config.read().await.dispute_period_seconds.max(1);
+        let dispute = LEADER_ROTATION_SECONDS.max(1);
         let round = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -994,19 +950,18 @@ impl BridgeRouter {
         let ForeignLeg::Evm {
             rpc_url,
             bridge_address,
+            confirmations,
             ..
         } = &route_def.foreign
         else {
             return Ok(());
         };
+        let block_confirmations = (*confirmations).max(1);
         let bridge_cfg = match self.require_route_config(state).await {
             Ok(cfg) => cfg,
             Err(_) => return Ok(()),
         };
-        let cfg = self.config.read().await;
-        let cast_bin = cfg.cast_bin.clone();
-        let dispute_secs = cfg.dispute_period_seconds.max(1) + 2;
-        drop(cfg);
+        let cast_bin = self.config.read().await.cast_bin.clone();
         let committee_guard = self.committee.read().await;
         let epoch = if committee_guard.size() == 0 {
             0
@@ -1024,7 +979,7 @@ impl BridgeRouter {
         };
         drop(committee_guard);
         let pk_hex = secret_key_hex(&self.secret_key)?;
-        let dispute = Duration::from_secs(dispute_secs);
+        let latest_block = eth_block_number(rpc_url).await.ok();
 
         let nonces: Vec<u64> = state
             .pending_evm_withdraws
@@ -1072,7 +1027,16 @@ impl BridgeRouter {
                         )
                         .await;
                         item.requested = true;
-                        item.requested_at = Some(std::time::Instant::now());
+                        match eth_block_number(rpc_url).await {
+                            Ok(block) => item.requested_block = Some(block),
+                            Err(err) => {
+                                warn!(
+                                    "Route {} requestWithdraw ok but block number unavailable for {}: {}",
+                                    state.route_id, nonce, err
+                                );
+                                item.requested = false;
+                            }
+                        }
                         state.pending_evm_withdraws.write().await.insert(nonce, item);
                     }
                     Err(err) => {
@@ -1111,8 +1075,13 @@ impl BridgeRouter {
             if item.finalized {
                 continue;
             }
-            let Some(started) = item.requested_at else { continue };
-            if started.elapsed() < dispute {
+            let Some(requested_block) = item.requested_block else {
+                continue;
+            };
+            let Some(latest) = latest_block else {
+                continue;
+            };
+            if latest < requested_block.saturating_add(block_confirmations) {
                 continue;
             }
             match cast_finalize_withdraw(&cast_bin, rpc_url, &pk_hex, bridge_address, item.id).await
@@ -1417,70 +1386,6 @@ impl BridgeRouter {
         Ok(())
     }
 
-    pub(crate) async fn poll_foreign_withdraws(
-        &self,
-        state: &RouteState,
-        route_def: &BridgeRoute,
-    ) -> anyhow::Result<()> {
-        self.prepare_route(state, route_def).await;
-        let bridge_cfg = match self.require_route_config(state).await {
-            Ok(cfg) => cfg,
-            Err(_) => return Ok(()),
-        };
-        let ForeignLeg::Lightpool {
-            rpc_url,
-            chain_id,
-            outbound_bridge_contract,
-            ..
-        } = &route_def.foreign
-        else {
-            return Ok(());
-        };
-        let foreign_contract = parse_contract_address(outbound_bridge_contract)?;
-        let foreign_client = LightpoolClient::new(rpc_url);
-        let foreign_cfg = match foreign_client.fetch_outbound_config(foreign_contract).await {
-            Ok(cfg) => cfg,
-            Err(_) => return Ok(()),
-        };
-        let next = foreign_cfg.next_withdraw_nonce;
-        if next <= 1 {
-            return Ok(());
-        }
-        let mut last = state.last_foreign_withdraw_nonce.load(Ordering::Relaxed);
-        while last + 1 < next {
-            let nonce = last + 1;
-            match foreign_client
-                .fetch_outbound_withdraw(foreign_contract, nonce)
-                .await
-            {
-                Ok(withdraw) => {
-                    if withdraw.status == OutboundWithdrawStatus::Pending {
-                        self.handle_foreign_withdraw(
-                            state,
-                            route_def,
-                            &bridge_cfg,
-                            *chain_id,
-                            &withdraw,
-                        )
-                        .await?;
-                    }
-                    last = nonce;
-                    state
-                        .last_foreign_withdraw_nonce
-                        .store(last, Ordering::Relaxed);
-                }
-                Err(err) => {
-                    debug!(
-                        "Route {} foreign withdraw {} not ready: {}",
-                        state.route_id, nonce, err
-                    );
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-
     async fn handle_foreign_withdraw(
         &self,
         state: &RouteState,
@@ -1724,7 +1629,7 @@ impl BridgeRouter {
             }
             return Ok(());
         }
-        let dispute = self.config.read().await.dispute_period_seconds.max(1);
+        let dispute = LEADER_ROTATION_SECONDS.max(1);
         let round = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1880,9 +1785,6 @@ pub fn spawn_bridge_router(
     admin_listen: Option<std::net::SocketAddr>,
     cancel: CancellationToken,
 ) -> anyhow::Result<BridgeHandle> {
-    if !config.enabled {
-        anyhow::bail!("bridge config has enabled=false");
-    }
     let handle = BridgeHandle::new(config_path, config, name, secret_key, committee)?;
     if let Some(listen) = admin_listen {
         let admin_handle = handle.clone();

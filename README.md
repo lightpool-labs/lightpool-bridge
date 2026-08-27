@@ -89,13 +89,11 @@ forge build
 
 ```json
 {
-  "enabled": true,
   "wallet_path": "/path/to/wallet.json",
   "evm_rpc_url": "http://127.0.0.1:8545",
   "evm_bridge_address": "0x...",
   "lightpool_rpc_url": "http://127.0.0.1:26300",
-  "poll_interval_ms": 1000,
-  "dispute_period_seconds": 5
+  "cast_bin": "cast"
 }
 ```
 

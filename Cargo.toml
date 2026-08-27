@@ -29,8 +29,9 @@ base64 = "0.13.0"
 ethabi = "18"
 ethereum-types = "0.14"
 k256 = { version = "0.13", features = ["ecdsa"] }
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 url = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 lightpool-crypto = { path = "../lightpool-crypto" }
 lightpool-types = { path = "../lightpool/crates/lightpool-types" }

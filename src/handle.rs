@@ -9,7 +9,7 @@ use lightpool_types::Committee;
 use serde::Serialize;
 
 use crate::config::{BridgeConfigError, BridgeLinkConfig};
-use crate::events::BridgeEventRecord;
+use crate::events::{BridgeEventRecord, EventsPage};
 use crate::router::BridgeRouter;
 
 #[derive(Clone)]
@@ -63,13 +63,21 @@ impl BridgeHandle {
         self.inner.status_snapshot().await
     }
 
-    pub async fn events(
+    pub async fn events_page(
         &self,
         route_id: Option<&str>,
         token: Option<&str>,
-        limit: usize,
-    ) -> Vec<BridgeEventRecord> {
-        self.inner.events.list(route_id, token, limit).await
+        page: u32,
+        page_size: u32,
+    ) -> EventsPage {
+        self.inner
+            .events
+            .list_page(route_id, token, page, page_size)
+            .await
+    }
+
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<BridgeEventRecord> {
+        self.inner.events.subscribe()
     }
 }
 

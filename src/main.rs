@@ -33,10 +33,6 @@ async fn main() -> Result<()> {
     let config = lightpool_bridge::BridgeLinkConfig::read(&args.config)
         .with_context(|| format!("failed to read config {}", args.config.display()))?;
 
-    if !config.enabled {
-        anyhow::bail!("bridge config has enabled=false; refusing to start");
-    }
-
     let (name, secret_key) = config.load_wallet().context("failed to load wallet")?;
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();

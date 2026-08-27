@@ -1,9 +1,7 @@
 {
-  "enabled": true,
   "wallet_path": "/path/to/wallet.json",
   "lightpool_rpc_url": "http://127.0.0.1:26300",
-  "dispute_period_seconds": 200,
-  "poll_interval_ms": 1000,
+  "cast_bin": "cast",
   "local": {
     "rpc_url": "http://127.0.0.1:26300",
     "chain_id": 1

@@ -68,7 +68,6 @@ async fn subscribe_loop(
         rpc_url,
         bridge_address,
         confirmations,
-        start_block,
         ..
     } = &route_def.foreign
     else {
@@ -96,43 +95,6 @@ async fn subscribe_loop(
     )
     .await?;
     let latest = parse_hex_u64(latest.as_str().unwrap_or("0x0"))?;
-    let safe = latest.saturating_sub(*confirmations);
-
-    let mut catchup_from = state.last_scanned_block.load(Ordering::Relaxed);
-    if catchup_from == 0 {
-        catchup_from = *start_block;
-    } else {
-        catchup_from = catchup_from.saturating_add(1);
-    }
-
-    if catchup_from <= safe {
-        let logs = ws_call(
-            &mut write,
-            &mut read,
-            &mut next_id,
-            &mut pending,
-            "eth_getLogs",
-            json!([{
-                "fromBlock": format!("0x{catchup_from:x}"),
-                "toBlock": format!("0x{safe:x}"),
-                "address": bridge_address,
-                "topics": [router.deposit_topic()],
-            }]),
-        )
-        .await?;
-        if let Some(items) = logs.as_array() {
-            for log in items {
-                router
-                    .on_evm_deposit_log(state, route_def, log.clone())
-                    .await?;
-                if let Some(block) = log_block_number(log) {
-                    state
-                        .last_scanned_block
-                        .fetch_max(block, Ordering::Relaxed);
-                }
-            }
-        }
-    }
 
     let logs_sub = ws_call(
         &mut write,

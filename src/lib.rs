@@ -21,4 +21,4 @@ pub use handle::{BridgeHandle, BridgeStatusResponse};
 pub use messages::{BridgeLinkVote, BridgeVoteKind};
 pub use route_config::{BridgeRoute, ForeignLeg, LocalChainConfig, LocalInboundConfig};
 pub use service::{spawn_bridge_link, BridgeLinkService};
-pub use events::{BridgeEventKind, BridgeEventLevel, BridgeEventRecord};
+pub use events::{BridgeEventKind, BridgeEventLevel, BridgeEventRecord, EventsPage};

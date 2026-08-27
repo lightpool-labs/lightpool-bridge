@@ -4,16 +4,20 @@
 use std::net::SocketAddr;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, Query, State,
+    },
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{BridgeConfigError, BridgeLinkConfig};
-use crate::events::BridgeEventRecord;
+use crate::events::{BridgeEventKind, BridgeEventRecord, EventsPage};
 use crate::handle::{BridgeHandle, BridgeStatusResponse};
 use crate::route_config::BridgeRoute;
 
@@ -41,12 +45,29 @@ struct PutConfigRequest {
 struct EventsQuery {
     route_id: Option<String>,
     token: Option<String>,
-    #[serde(default = "default_event_limit")]
-    limit: usize,
+    #[serde(default = "default_event_page")]
+    page: u32,
+    #[serde(default = "default_event_page_size")]
+    page_size: u32,
 }
 
-fn default_event_limit() -> usize {
-    100
+fn default_event_page() -> u32 {
+    1
+}
+
+fn default_event_page_size() -> u32 {
+    50
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum EventsWsMessage {
+    Event {
+        event: BridgeEventRecord,
+    },
+    Status {
+        status: BridgeStatusResponse,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +83,7 @@ pub async fn run_embedded(bridge: BridgeHandle, listen: SocketAddr) -> anyhow::R
         .route("/api/health", get(health))
         .route("/api/status", get(status))
         .route("/api/events", get(events))
+        .route("/api/ws/events", get(events_ws))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/routes", get(list_routes).post(create_route))
         .route("/api/routes/:id", put(update_route).delete(delete_route))
@@ -94,13 +116,85 @@ async fn status(State(state): State<AdminState>) -> Json<BridgeStatusResponse> {
 async fn events(
     State(state): State<AdminState>,
     Query(q): Query<EventsQuery>,
-) -> Json<Vec<BridgeEventRecord>> {
+) -> Json<EventsPage> {
     Json(
         state
             .bridge
-            .events(q.route_id.as_deref(), q.token.as_deref(), q.limit)
+            .events_page(
+                q.route_id.as_deref(),
+                q.token.as_deref(),
+                q.page,
+                q.page_size,
+            )
             .await,
     )
+}
+
+async fn events_ws(
+    ws: WebSocketUpgrade,
+    Query(q): Query<EventsQuery>,
+    State(state): State<AdminState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| events_ws_loop(socket, state, q))
+}
+
+async fn events_ws_loop(mut socket: WebSocket, state: AdminState, q: EventsQuery) {
+    let route_id = q.route_id.filter(|id| !id.is_empty());
+    let token = q.token.filter(|t| !t.is_empty());
+
+    let status = state.bridge.status().await;
+    if send_ws_json(&mut socket, &EventsWsMessage::Status { status })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut rx = state.bridge.subscribe_events();
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => break,
+                }
+            }
+            received = rx.recv() => {
+                match received {
+                    Ok(event) => {
+                        if route_id.as_ref().is_some_and(|r| event.route_id != *r) {
+                            continue;
+                        }
+                        if token.as_ref().is_some_and(|t| event.token.as_deref() != Some(t.as_str())) {
+                            continue;
+                        }
+                        if send_ws_json(&mut socket, &EventsWsMessage::Event { event: event.clone() }).await.is_err() {
+                            break;
+                        }
+                        if matches!(event.kind, BridgeEventKind::ConfigUpdated | BridgeEventKind::RouteReloaded) {
+                            let status = state.bridge.status().await;
+                            if send_ws_json(&mut socket, &EventsWsMessage::Status { status }).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
+async fn send_ws_json(socket: &mut WebSocket, message: &EventsWsMessage) -> Result<(), ()> {
+    let text = serde_json::to_string(message).map_err(|_| ())?;
+    socket.send(Message::Text(text)).await.map_err(|_| ())
 }
 
 async fn get_config(State(state): State<AdminState>) -> Json<BridgeLinkConfig> {

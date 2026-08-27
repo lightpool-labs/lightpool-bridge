@@ -147,7 +147,7 @@ Bridge transport (LightPool routes are fully WebSocket-driven; no poll loop):
 
 - **Local LP (all routes)** — local inbound `withdraw` via WebSocket (local RPC port **+ 100**, e.g. `26300` → `26400`). Foreign `deposit` submits in the same WS handler (ms-level).
 - **LightPool foreign route** — foreign `outbound-withdraw` via WebSocket (foreign RPC port **+ 100**, e.g. `27300` → `27400`). Local `confirm_dep` submits in the same WS handler.
-- **Reth route** — EVM deposit logs via WebSocket (`:8546`). Local withdraw via local LP WebSocket. EVM `requestWithdraw` submits immediately; `finalizeWithdraw` uses a poll loop (`poll_interval_ms`, default 1s) only because of the on-chain dispute period.
+- **Reth route** — EVM deposit logs via WebSocket (`:8546`). Local withdraw via local LP WebSocket. EVM `requestWithdraw` submits immediately; `finalizeWithdraw` runs after `confirmations` blocks on the route.
 
 1. **Settings** → **Wallet path** → `~/.lightpool/wallet.json` → **Save**  
    Must be the **local validator wallet** (same key used when bootstrap runs `create-outbound-bridge`). If this path points at a different key than the outbound bridge authorities, foreign deposits fail with `bridge voter not in authorities`.
