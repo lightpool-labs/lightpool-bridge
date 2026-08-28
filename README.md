@@ -7,27 +7,30 @@ Standalone off-chain bridge link for LightPool: watches foreign chains and local
 Multi-token **hub** model: one bridge hub per leg, many token lanes; **lightpool-bridge** runs **one route per lane**.
 
 ```text
-                    ┌──────────────────────────────────────┐
-                    │         lightpool-bridge             │
-                    │  Admin UI :8787 · wallet / routes    │
-                    └───────┬──────────────┬───────────────┘
-           WS DepositInit.  │              │  WS ReceiptBlocks
-           cast request/    │              │  confirm_dep /
-           finalizeWithdraw │              │  outbound deposit
-                    ▼       │              ▼
-         ┌──────────────┐   │     ┌─────────────────┐
-         │ Reth (EVM)   │   │     │ Local LightPool │
-         │ :8545 / :8546│   │     │ RPC :26300      │
-         │ Bridge hub   │   │     │ WS  :26400      │
-         └──────────────┘   │     │ inbound hub     │
-                            │     └────────┬────────┘
-                            │              │
-                            │     ┌────────▼────────┐
-                            └────►│ Foreign LightPool│
-                                  │ RPC :27300       │
-                                  │ WS  :27400       │
-                                  │ outbound hub     │
-                                  └──────────────────┘
+   ┌────────────────────────┐     ┌────────────────────────┐
+   │      Reth (EVM)        │     │   Foreign LightPool    │
+   │  RPC :8545  WS :8546   │     │  RPC :27300  WS :27400 │
+   │  Bridge hub            │     │  outbound hub          │
+   └───────────┬────────────┘     └───────────┬────────────┘
+               │                              │
+               │  WS DepositInitiated         │  WS outbound withdraw
+               │  cast request/finalize       │  outbound deposit
+               │                              │
+               └──────────────┬───────────────┘
+                              ▼
+                ┌─────────────────────────────┐
+                │      lightpool-bridge       │
+                │  Admin UI :8787 · routes    │
+                └──────────────┬──────────────┘
+                               │
+                               │  WS inbound withdraw
+                               │  confirm_dep
+                               ▼
+                ┌─────────────────────────────┐
+                │     Local LightPool         │
+                │  RPC :26300  WS :26400      │
+                │  inbound hub                │
+                └─────────────────────────────┘
 ```
 
 | Direction | Watch | Submit |
