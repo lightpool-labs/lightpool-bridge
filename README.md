@@ -25,7 +25,7 @@ Standalone off-chain bridge process for LightPool, plus EVM contracts under `con
 
 Local setup guides:
 
-- [`docs/LOCAL_BRIDGE_RUNBOOK.md`](docs/LOCAL_BRIDGE_RUNBOOK.md) — **unified** local + Reth + foreign LightPool, Add route params, deposit/withdraw
+- [`docs/LOCAL_E2E_BRIDGE_SETUP.md`](docs/LOCAL_E2E_BRIDGE_SETUP.md) — **unified** local + Reth + foreign LightPool, Add route params, deposit/withdraw
 - [`docs/RETH_FOREIGN_NODE.md`](docs/RETH_FOREIGN_NODE.md) — Reth (EVM) as foreign node
 - [`docs/LIGHTPOOL_FOREIGN_NODE.md`](docs/LIGHTPOOL_FOREIGN_NODE.md) — second LightPool node as foreign node
 
@@ -57,7 +57,7 @@ python3 00_bridge_bootstrap.py --phase create
 
 - `src/` — Rust binary `lightpool-bridge`
 - `contracts/` — Foundry EVM contracts and deploy scripts
-- `docs/LOCAL_BRIDGE_RUNBOOK.md` — unified local + Reth + LP-foreign runbook
+- `docs/LOCAL_E2E_BRIDGE_SETUP.md` — unified local + Reth + LP-foreign setup
 - `docs/RETH_FOREIGN_NODE.md` — Reth + LightPool + bridge runbook
 - `docs/LIGHTPOOL_FOREIGN_NODE.md` — two LightPool nodes + bridge runbook
 - `bridge.config.example.json` — config template

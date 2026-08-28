@@ -1,4 +1,4 @@
-# Local bridge runbook — first-time setup
+# Local end-to-end bridge setup (Reth + local LP + foreign LP)
 
 Linear guide: **local LightPool** + **Reth (EVM)** + **foreign LightPool** + **lightpool-bridge**. Follow the steps in order.
 
