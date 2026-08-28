@@ -401,6 +401,4 @@ Repeat from **Step 2 — Build**.
 
 ## Further reading
 
-- [`RETH_FOREIGN_NODE.md`](RETH_FOREIGN_NODE.md)
-- [`LIGHTPOOL_FOREIGN_NODE.md`](LIGHTPOOL_FOREIGN_NODE.md)
 - Venue / app stack (liquidity maker needs LP USDT on local chain): `lightpool-node/doc/venue-stack-bridge.md` — `00_bridge_bootstrap.py --phase fund` (maker EVM deposit; must use hub `deposit(address,uint64,address)` with `$ETH_USDT` as in Step 8)
