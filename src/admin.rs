@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{BridgeConfigError, BridgeLinkConfig};
-use crate::events::{BridgeEventKind, BridgeEventRecord, EventsPage};
+use crate::events::{BridgeEventRecord, EventsPage};
 use crate::handle::{BridgeHandle, BridgeStatusResponse};
 use crate::route_config::BridgeRoute;
 
@@ -176,12 +176,6 @@ async fn events_ws_loop(mut socket: WebSocket, state: AdminState, q: EventsQuery
                         }
                         if send_ws_json(&mut socket, &EventsWsMessage::Event { event: event.clone() }).await.is_err() {
                             break;
-                        }
-                        if matches!(event.kind, BridgeEventKind::ConfigUpdated | BridgeEventKind::RouteReloaded) {
-                            let status = state.bridge.status().await;
-                            if send_ws_json(&mut socket, &EventsWsMessage::Status { status }).await.is_err() {
-                                break;
-                            }
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,

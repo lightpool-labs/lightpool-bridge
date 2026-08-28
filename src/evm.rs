@@ -161,6 +161,78 @@ pub async fn eth_block_number(rpc: &str) -> Result<u64> {
         .map_err(|err| anyhow!("invalid eth_blockNumber {hex}: {err}"))
 }
 
+async fn eth_call_u64(rpc: &str, to: &str, data: &str) -> Result<u64> {
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .post(rpc)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_call",
+            "params": [{ "to": to, "data": data }, "latest"],
+        }))
+        .send()
+        .await
+        .context("eth_call request failed")?
+        .json()
+        .await
+        .context("eth_call response parse failed")?;
+    if let Some(err) = resp.get("error") {
+        return Err(anyhow!("eth_call error: {err}"));
+    }
+    let hex = resp
+        .get("result")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("eth_call missing result"))?;
+    let body = hex.trim_start_matches("0x");
+    if body.is_empty() {
+        return Err(anyhow!("eth_call empty result"));
+    }
+    u64::from_str_radix(&body[body.len().saturating_sub(16)..], 16)
+        .map_err(|err| anyhow!("invalid eth_call u64 {hex}: {err}"))
+}
+
+/// On-chain Bridge dispute parameters (DeployLocal: 5s, 1000ms).
+#[derive(Debug, Clone, Copy)]
+pub struct EvmDisputeParams {
+    pub period_seconds: u64,
+    pub block_duration_millis: u64,
+}
+
+impl Default for EvmDisputeParams {
+    fn default() -> Self {
+        Self {
+            period_seconds: 5,
+            block_duration_millis: 1000,
+        }
+    }
+}
+
+pub async fn fetch_dispute_params(rpc: &str, bridge: &str) -> Result<EvmDisputeParams> {
+    let period_seconds = eth_call_u64(rpc, bridge, "0x0756183b").await?;
+    let block_duration_millis = eth_call_u64(rpc, bridge, "0x9d5bc9e1").await?;
+    Ok(EvmDisputeParams {
+        period_seconds,
+        block_duration_millis,
+    })
+}
+
+/// Blocks that must elapse after request before Bridge.finalizeWithdraw can succeed.
+/// Mirrors Bridge._inDispute: need elapsedBlocks * blockDurationMillis > 1000 * disputePeriodSeconds.
+pub fn dispute_block_delay(params: EvmDisputeParams, confirmations: u64) -> u64 {
+    let from_dispute = if params.block_duration_millis == 0 {
+        params.period_seconds.saturating_add(1)
+    } else {
+        (1000 * params.period_seconds) / params.block_duration_millis + 1
+    };
+    from_dispute.max(confirmations.max(1))
+}
+
+pub fn still_in_dispute_error(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("0x2d3666c9") || lower.contains("stillindispute")
+}
+
 pub async fn cast_request_withdraw(
     cast_bin: &str,
     rpc: &str,

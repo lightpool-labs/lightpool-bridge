@@ -3,6 +3,11 @@
 
 use lightpool_types::contract::ContractAddress;
 use lightpool_types::module::Module;
+use lightpool_types::module_types::bridge::{
+    BridgeConfig, BridgeWithdrawRecord, InboundTokenLane, OutboundBridgeConfig, OutboundTokenLane,
+};
+
+use crate::route_config::{BridgeRoute, ForeignLeg};
 
 pub fn default_inbound_contract() -> ContractAddress {
     let mut rest = [0u8; 7];
@@ -98,4 +103,69 @@ pub fn lock_source_hash(chain_id: u64, bridge: ContractAddress, nonce: u64) -> [
     buf.extend_from_slice(bridge.as_bytes());
     buf.extend_from_slice(&nonce.to_be_bytes());
     Keccak256::digest(buf)
+}
+
+pub fn foreign_token_bytes(raw: &str) -> anyhow::Result<[u8; 20]> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("foreign token is empty"));
+    }
+    if trimmed.contains("0x02") || trimmed.len() <= 34 {
+        let contract = parse_contract_address(trimmed)?;
+        let bytes = contract.as_bytes();
+        let mut out = [0u8; 20];
+        out[20 - bytes.len()..].copy_from_slice(bytes);
+        return Ok(out);
+    }
+    parse_evm_address(trimmed)
+}
+
+pub fn inbound_lane_for_route<'a>(
+    cfg: &'a BridgeConfig,
+    route: &BridgeRoute,
+) -> anyhow::Result<&'a InboundTokenLane> {
+    if !route.local_inbound.lp_token.trim().is_empty() {
+        let lp = parse_contract_address(&route.local_inbound.lp_token)?;
+        if let Some(lane) = cfg.lane_by_lp_token(lp) {
+            return Ok(lane);
+        }
+    }
+    match &route.foreign {
+        ForeignLeg::Evm { token_address, .. } | ForeignLeg::Lightpool { foreign_token: token_address, .. } => {
+            if !token_address.trim().is_empty() {
+                let foreign = foreign_token_bytes(token_address)?;
+                if let Some(lane) = cfg.lane_by_foreign_token(foreign) {
+                    return Ok(lane);
+                }
+            }
+        }
+    }
+    Err(anyhow::anyhow!("no inbound lane matched for route {}", route.id))
+}
+
+pub fn contract_to_foreign_token(token: ContractAddress) -> [u8; 20] {
+    let bytes = token.as_bytes();
+    let mut out = [0u8; 20];
+    out[20 - bytes.len()..].copy_from_slice(bytes);
+    out
+}
+
+pub fn outbound_lane_for_inbound_withdraw<'a>(
+    cfg: &'a OutboundBridgeConfig,
+    record: &BridgeWithdrawRecord,
+) -> anyhow::Result<&'a OutboundTokenLane> {
+    let foreign_ref = contract_to_foreign_token(record.token);
+    if let Some(lane) = cfg.lane_by_foreign_token(foreign_ref) {
+        return Ok(lane);
+    }
+    if let Some(lane) = cfg.lane_by_index(record.lane_index) {
+        return Ok(lane);
+    }
+    cfg.lane_by_lp_token(record.token).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no outbound lane for local token {} (lane_index={})",
+            record.token,
+            record.lane_index
+        )
+    })
 }

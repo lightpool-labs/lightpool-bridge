@@ -198,6 +198,10 @@
     th, td { text-align: left; padding: 0.75rem 1rem; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
     tbody tr:last-child td { border-bottom: none; }
     tbody tr:hover { background: #f8fafc; }
+    tbody tr.event-dir-deposit { color: #047857; }
+    tbody tr.event-dir-withdraw { color: #0369a1; }
+    tbody tr.event-dir-deposit .event-detail { color: #059669; }
+    tbody tr.event-dir-withdraw .event-detail { color: #0284c7; }
     th { font-weight: 600; font-size: 0.8125rem; }
     .badge {
       display: inline-block;
@@ -531,9 +535,6 @@
         eventsWs.close();
         eventsWs = null;
       }
-      eventsLive = [];
-      renderEvents(eventsLive);
-      updatePagination();
 
       const ws = new WebSocket(wsUrl());
       eventsWs = ws;
@@ -564,9 +565,6 @@
             );
             renderEvents(eventsLive);
             updatePagination();
-          }
-          if (payload.event.kind === "config_updated" || payload.event.kind === "route_reloaded") {
-            loadConfig().catch(() => {});
           }
         }
       };
@@ -647,6 +645,31 @@
       return `${symbol}(${lp})`;
     }
 
+    function eventDirection(kind) {
+      const depositKinds = new Set([
+        "deposit_seen",
+        "confirm_dep_submitted",
+        "confirm_dep_ok",
+        "confirm_dep_failed",
+      ]);
+      const withdrawKinds = new Set([
+        "withdraw_seen",
+        "confirm_withdraw_submitted",
+        "confirm_withdraw_ok",
+        "confirm_withdraw_failed",
+        "deposit_submitted",
+        "deposit_ok",
+        "deposit_failed",
+        "evm_request_sent",
+        "evm_request_failed",
+        "evm_finalized",
+        "evm_finalize_failed",
+      ]);
+      if (depositKinds.has(kind)) return "deposit";
+      if (withdrawKinds.has(kind)) return "withdraw";
+      return null;
+    }
+
     function formatAmountCell(e) {
       if (e.amount == null) return "—";
       const value = Number(e.amount) / 1_000_000;
@@ -663,6 +686,8 @@
       $("eventsEmpty").classList.toggle("hidden", events.length > 0);
       for (const e of events) {
         const tr = document.createElement("tr");
+        const direction = eventDirection(e.kind);
+        if (direction) tr.classList.add(`event-dir-${direction}`);
         const ts = new Date(Number(e.ts_ms)).toISOString();
         const routeCell = showAllRoutes
           ? `<td class="mono">${e.route_id || "global"}</td>`
@@ -671,7 +696,7 @@
           <td class="mono">${ts}</td>
           ${routeCell}
           <td class="mono">${formatTokenCell(e)}</td>
-          <td>${e.kind}</td>
+          <td class="mono">${e.kind}</td>
           <td class="mono">${formatAmountCell(e)}</td>
           <td class="event-detail">${e.detail}</td>
         `;
@@ -845,7 +870,6 @@
         });
       }
       $("routeDialog").close();
-      selectedRouteId = route.id;
       await loadAll();
       toast(creating ? "Route added and loaded" : "Route updated");
     }

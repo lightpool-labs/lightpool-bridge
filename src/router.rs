@@ -27,21 +27,21 @@ use crate::config::{BridgeConfigError, BridgeLinkConfig};
 use crate::events::{events_db_path, BridgeEventKind, BridgeEventLevel, EventStore};
 use crate::handle::RouteStatusSnapshot;
 use crate::evm::{
-    cast_finalize_withdraw, cast_request_withdraw, eth_block_number, eth_sign_digest,
-    request_withdraw_digest,
-    secret_key_hex, withdraw_id, EthSignature, EvmCommittee,
+    cast_finalize_withdraw, cast_request_withdraw, dispute_block_delay, eth_block_number,
+    eth_sign_digest, fetch_dispute_params, request_withdraw_digest, secret_key_hex,
+    still_in_dispute_error, withdraw_id, EthSignature, EvmCommittee,
 };
 use crate::lp::LightpoolClient;
 use crate::messages::{BridgeLinkVote, BridgeVoteKind};
 use crate::route_config::{BridgeRoute, ForeignLeg};
 use crate::util::{
     address_from_word, evm_address_hex, lock_source_hash, parse_b32, parse_contract_address,
-    parse_evm_address,
     topic_address, topic_u64, u64_from_word,
 };
 
-const EVM_WITHDRAW_MAINTENANCE_MS: u64 = 1_000;
 const LEADER_ROTATION_SECONDS: u64 = 200;
+const EVM_REQUEST_ATTEMPTS: u32 = 5;
+const EVM_FINALIZE_POLL_MS: u64 = 500;
 
 #[derive(Debug, Serialize)]
 struct ConfirmDepositParams {
@@ -72,6 +72,7 @@ struct PendingEvmWithdraw {
     signature: EthSignature,
     requested: bool,
     requested_block: Option<u64>,
+    requested_at_ms: Option<u64>,
     finalized: bool,
     failed: bool,
 }
@@ -89,7 +90,7 @@ pub(crate) struct RouteState {
     pub(crate) last_scanned_block: AtomicU64,
     last_withdraw_nonce: AtomicU64,
     last_foreign_withdraw_nonce: AtomicU64,
-    seen_deposits: RwLock<HashSet<u64>>,
+    seen_deposits: RwLock<HashSet<(u32, u64)>>,
     bridge_config: RwLock<Option<BridgeConfig>>,
     pending_evm_withdraws: RwLock<HashMap<u64, PendingEvmWithdraw>>,
     pending_lp_deposits: RwLock<HashMap<u64, PendingLpDeposit>>,
@@ -160,24 +161,17 @@ impl BridgeRouter {
     ) -> anyhow::Result<()> {
         self.prepare_route(state, route_def).await;
         let bridge_cfg = self.require_route_config(state).await?;
-        let ForeignLeg::Evm {
-            token_address,
-            chain_id,
-            ..
-        } = &route_def.foreign
-        else {
+        let lane = crate::util::inbound_lane_for_route(&bridge_cfg, route_def)?;
+        let ForeignLeg::Evm { chain_id, .. } = &route_def.foreign else {
             return Ok(());
         };
-        let expected_token = if token_address.trim().is_empty() {
-            bridge_cfg.foreign_token
-        } else {
-            parse_evm_address(token_address)?
-        };
+        let expected_token = lane.foreign_token;
         self.handle_evm_deposit_log(
             state,
             route_def,
             &log,
             &bridge_cfg,
+            lane,
             expected_token,
             *chain_id,
         )
@@ -188,10 +182,10 @@ impl BridgeRouter {
         let config = self.config.read().await;
         let states = self.routes.read().await.clone();
         let desired: Vec<(String, BridgeRoute)> = config
-            .routes
-            .iter()
+            .all_routes()
+            .into_iter()
             .filter(|r| r.enabled && matches!(r.foreign, ForeignLeg::Evm { .. }))
-            .map(|r| (r.id.clone(), r.clone()))
+            .map(|r| (r.id.clone(), r))
             .collect();
         drop(config);
 
@@ -229,10 +223,10 @@ impl BridgeRouter {
         let config = self.config.read().await;
         let states = self.routes.read().await.clone();
         let desired: Vec<(String, BridgeRoute)> = config
-            .routes
-            .iter()
+            .all_routes()
+            .into_iter()
             .filter(|r| r.enabled && matches!(r.foreign, ForeignLeg::Lightpool { .. }))
-            .map(|r| (r.id.clone(), r.clone()))
+            .map(|r| (r.id.clone(), r))
             .collect();
         drop(config);
 
@@ -271,10 +265,10 @@ impl BridgeRouter {
         let local_rpc_url = config.local.rpc_url.clone();
         let states = self.routes.read().await.clone();
         let desired: Vec<(String, BridgeRoute)> = config
-            .routes
-            .iter()
+            .all_routes()
+            .into_iter()
             .filter(|r| r.enabled)
-            .map(|r| (r.id.clone(), r.clone()))
+            .map(|r| (r.id.clone(), r))
             .collect();
         drop(config);
 
@@ -311,8 +305,8 @@ impl BridgeRouter {
     }
 
     pub(crate) async fn on_lp_local_withdraw(
-        &self,
-        state: &RouteState,
+        self: &Arc<Self>,
+        state: &Arc<RouteState>,
         route_def: &BridgeRoute,
         record: BridgeWithdrawRecord,
     ) -> anyhow::Result<()> {
@@ -363,8 +357,8 @@ impl BridgeRouter {
         previous: &[Arc<RouteState>],
     ) -> Vec<Arc<RouteState>> {
         config
-            .routes
-            .iter()
+            .all_routes()
+            .into_iter()
             .filter(|r| r.enabled)
             .map(|route| {
                 if let Some(existing) = previous.iter().find(|s| s.route_id == route.id) {
@@ -411,29 +405,6 @@ impl BridgeRouter {
             .set_rpc_url(config.local.rpc_url.clone());
         let previous = self.routes.read().await.clone();
         *self.routes.write().await = Self::build_route_states(&config, &previous);
-        let enabled = config.routes.iter().filter(|r| r.enabled).count();
-        self.events
-            .emit(
-                "global",
-                None,
-                BridgeEventKind::ConfigUpdated,
-                BridgeEventLevel::Info,
-                None,
-                None,
-                format!("config saved to {}", self.config_path.display()),
-            )
-            .await;
-        self.events
-            .emit(
-                "global",
-                None,
-                BridgeEventKind::RouteReloaded,
-                BridgeEventLevel::Info,
-                None,
-                None,
-                format!("{enabled} enabled route(s) active"),
-            )
-            .await;
         Ok(config)
     }
 
@@ -442,8 +413,9 @@ impl BridgeRouter {
         let committee = self.committee.read().await;
         let active = self.routes.read().await.clone();
         let pending = self.pending.read().await;
+        let route_defs = config.all_routes();
         let mut routes = Vec::new();
-        for route in &config.routes {
+        for route in &route_defs {
             let snapshot = if let Some(state) = active.iter().find(|s| s.route_id == route.id) {
                 let bridge_cfg = state.bridge_config.read().await;
                 let pending_deposits = pending
@@ -460,11 +432,19 @@ impl BridgeRouter {
                     inbound_contract: format!("{inbound}"),
                     lp_token: route.local_inbound.lp_token.clone(),
                     config_loaded: bridge_cfg.is_some(),
-                    lp_token_on_chain: bridge_cfg.as_ref().map(|c| format!("{}", c.token)),
+                    lp_token_on_chain: bridge_cfg
+                        .as_ref()
+                        .and_then(|c| crate::util::inbound_lane_for_route(c, route).ok())
+                        .map(|lane| format!("{}", lane.lp_token)),
                     evm_token_on_chain: bridge_cfg
                         .as_ref()
-                        .map(|c| evm_address_hex(&c.foreign_token)),
-                    next_withdraw_nonce: bridge_cfg.as_ref().map(|c| c.next_withdraw_nonce),
+                        .and_then(|c| crate::util::inbound_lane_for_route(c, route).ok())
+                        .map(|lane| evm_address_hex(&lane.foreign_token)),
+                    next_withdraw_nonce: bridge_cfg.as_ref().and_then(|c| {
+                        crate::util::inbound_lane_for_route(c, route)
+                            .ok()
+                            .map(|lane| lane.next_withdraw_nonce)
+                    }),
                     last_scanned_block: state.last_scanned_block.load(Ordering::Relaxed),
                     last_withdraw_nonce_scanned: state.last_withdraw_nonce.load(Ordering::Relaxed),
                     last_foreign_withdraw_nonce_scanned: state
@@ -505,8 +485,8 @@ impl BridgeRouter {
             validator: format!("{}", self.name),
             committee_epoch: committee.epoch,
             committee_size: committee.size(),
-            route_count: config.routes.len(),
-            enabled_route_count: config.routes.iter().filter(|r| r.enabled).count(),
+            route_count: config.all_routes().len(),
+            enabled_route_count: config.all_routes().iter().filter(|r| r.enabled).count(),
             routes,
         }
     }
@@ -515,7 +495,11 @@ impl BridgeRouter {
         if !route.local_inbound.lp_token.is_empty() {
             return Some(route.local_inbound.lp_token.clone());
         }
-        bridge_cfg.map(|c| format!("{}", c.token))
+        bridge_cfg.and_then(|c| {
+            crate::util::inbound_lane_for_route(c, route)
+                .ok()
+                .map(|lane| format!("{}", lane.lp_token))
+        })
     }
 
     fn is_evm_token_event(kind: BridgeEventKind) -> bool {
@@ -535,16 +519,19 @@ impl BridgeRouter {
                 return Some(token_address.trim().to_string());
             }
         }
-        bridge_cfg.map(|c| evm_address_hex(&c.foreign_token))
+        bridge_cfg.and_then(|c| {
+            crate::util::inbound_lane_for_route(c, route)
+                .ok()
+                .map(|lane| evm_address_hex(&lane.foreign_token))
+        })
     }
 
     async fn route_cfg(&self, state: &RouteState) -> Option<BridgeRoute> {
         let config = self.config.read().await;
         config
-            .routes
-            .iter()
+            .all_routes()
+            .into_iter()
             .find(|r| r.id == state.route_id && r.enabled)
-            .cloned()
     }
 
     async fn emit_route(
@@ -590,8 +577,8 @@ impl BridgeRouter {
             info!(
                 "Bridge router started (local={}, routes={}/{})",
                 config.local.rpc_url,
-                config.routes.iter().filter(|r| r.enabled).count(),
-                config.routes.len()
+                config.all_routes().iter().filter(|r| r.enabled).count(),
+                config.all_routes().len()
             );
         }
         self.sync_evm_subscribers().await;
@@ -605,21 +592,8 @@ impl BridgeRouter {
             }
         }
 
-        let evm_cancel = cancel.child_token();
-        if self.has_enabled_evm_routes().await {
-            info!("EVM routes enabled: withdraw maintenance active");
-            let router = Arc::clone(&self);
-            let evm_token = evm_cancel.clone();
-            tokio::spawn(async move {
-                router.run_evm_maintenance(evm_token).await;
-            });
-        } else {
-            info!("LightPool routes are WebSocket-driven; no poll loop");
-        }
-
         cancel.cancelled().await;
 
-        evm_cancel.cancel();
         {
             let mut evm_tokens = self.evm_subscriber_tokens.write().await;
             for (_, token) in evm_tokens.drain() {
@@ -637,48 +611,9 @@ impl BridgeRouter {
         info!("Bridge router shutting down");
     }
 
-    async fn has_enabled_evm_routes(&self) -> bool {
-        self.config
-            .read()
-            .await
-            .routes
-            .iter()
-            .any(|r| r.enabled && matches!(r.foreign, ForeignLeg::Evm { .. }))
-    }
-
-    async fn run_evm_maintenance(self: Arc<Self>, cancel: CancellationToken) {
-        let interval = Duration::from_millis(EVM_WITHDRAW_MAINTENANCE_MS);
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(interval) => {
-                    if let Err(err) = self.evm_maintenance_tick().await {
-                        warn!("Bridge EVM maintenance error: {}", err);
-                    }
-                }
-            }
-        }
-    }
-
     async fn prepare_route(&self, state: &RouteState, route_def: &BridgeRoute) {
         let _ = self.refresh_committee().await;
         let _ = self.refresh_route_config(state, route_def).await;
-    }
-
-    async fn evm_maintenance_tick(&self) -> anyhow::Result<()> {
-        self.refresh_committee().await?;
-        let routes = self.routes.read().await.clone();
-        for state in &routes {
-            let Some(route_def) = self.route_cfg(state).await else {
-                continue;
-            };
-            if !matches!(route_def.foreign, ForeignLeg::Evm { .. }) {
-                continue;
-            }
-            self.refresh_route_config(state, &route_def).await?;
-            self.try_submit_evm_withdraws(state, &route_def).await?;
-        }
-        Ok(())
     }
 
     async fn refresh_committee(&self) -> anyhow::Result<()> {
@@ -713,10 +648,12 @@ impl BridgeRouter {
             Ok(cfg) => {
                 let mut guard = state.bridge_config.write().await;
                 if guard.is_none() {
-                    info!(
-                        "Route {} loaded inbound config token={} chain_id={}",
-                        state.route_id, cfg.token, cfg.foreign_chain_id
-                    );
+                    if let Ok(lane) = crate::util::inbound_lane_for_route(&cfg, route_def) {
+                        info!(
+                            "Route {} loaded inbound lane={} token={} chain_id={}",
+                            state.route_id, lane.lane_index, lane.lp_token, cfg.foreign_chain_id
+                        );
+                    }
                 }
                 *guard = Some(cfg);
             }
@@ -742,8 +679,8 @@ impl BridgeRouter {
     }
 
     async fn handle_local_withdraw(
-        &self,
-        state: &RouteState,
+        self: &Arc<Self>,
+        state: &Arc<RouteState>,
         route_def: &BridgeRoute,
         bridge_cfg: &BridgeConfig,
         record: BridgeWithdrawRecord,
@@ -753,7 +690,8 @@ impl BridgeRouter {
             ForeignLeg::Evm { .. } => {
                 self.enqueue_evm_withdraw(state, route_def, bridge_cfg, record)
                     .await?;
-                self.try_submit_evm_withdraws(state, route_def).await
+                self.request_evm_withdraw_then_finalize(state, route_def, nonce)
+                    .await
             }
             ForeignLeg::Lightpool {
                 rpc_url,
@@ -778,7 +716,10 @@ impl BridgeRouter {
     }
 
     fn already_processed_detail(detail: &str) -> bool {
-        detail.to_ascii_lowercase().contains("already processed")
+        let lower = detail.to_ascii_lowercase();
+        lower.contains("already processed")
+            || lower.contains("alreadyprocessed")
+            || lower.contains("0x57eee766")
     }
 
     fn evm_withdraw_permanent_failure(detail: &str) -> bool {
@@ -796,6 +737,7 @@ impl BridgeRouter {
         bridge_cfg: &BridgeConfig,
         record: BridgeWithdrawRecord,
     ) -> anyhow::Result<()> {
+        let lane = crate::util::inbound_lane_for_route(bridge_cfg, route_def)?;
         let committee = self.committee.read().await;
         let epoch = if committee.size() == 0 {
             0
@@ -820,7 +762,7 @@ impl BridgeRouter {
             id,
             user,
             record.foreign_recipient,
-            bridge_cfg.foreign_token,
+            lane.foreign_token,
             record.amount,
             record.nonce,
             epoch,
@@ -849,6 +791,7 @@ impl BridgeRouter {
                 signature,
                 requested: false,
                 requested_block: None,
+                requested_at_ms: None,
                 finalized: false,
                 failed: false,
             },
@@ -873,13 +816,16 @@ impl BridgeRouter {
         let foreign_contract = parse_contract_address(outbound_bridge_contract)?;
         let foreign_client = LightpoolClient::new(foreign_rpc);
         let foreign_cfg = foreign_client.fetch_outbound_config(foreign_contract).await?;
+        let outbound_lane =
+            crate::util::outbound_lane_for_inbound_withdraw(&foreign_cfg, &record)?;
         let local_chain_id = self.config.read().await.local.chain_id;
         let inbound = inbound_contract_for(route_def);
         let message = OutboundDepositMessage {
             bridge: foreign_contract,
+            lane_index: outbound_lane.lane_index,
             message_id: record.nonce,
             source_chain_id: local_chain_id,
-            token: foreign_cfg.token,
+            token: outbound_lane.lp_token,
             amount: record.amount,
             sender_foreign: *record.sender.as_bytes(),
             recipient: Address::new(record.foreign_recipient),
@@ -889,7 +835,7 @@ impl BridgeRouter {
         };
         let vote = self.sign_outbound_deposit_vote(&message);
         info!(
-            "Route {} queued foreign deposit nonce={} amount={}",
+            "Route {} queued local withdraw nonce={} amount={}",
             state.route_id, record.nonce, record.amount
         );
         self.emit_route(
@@ -900,7 +846,7 @@ impl BridgeRouter {
             BridgeEventLevel::Info,
             Some(record.nonce),
             Some(record.amount),
-            "queued foreign LP deposit".to_string(),
+            format!("withdraw to 0x{}", hex::encode(record.foreign_recipient)),
         )
         .await;
         pending.insert(
@@ -939,28 +885,57 @@ impl BridgeRouter {
         keys[round % keys.len()] == self.name
     }
 
-    async fn try_submit_evm_withdraws(
-        &self,
-        state: &RouteState,
+    async fn request_evm_withdraw_then_finalize(
+        self: &Arc<Self>,
+        state: &Arc<RouteState>,
         route_def: &BridgeRoute,
+        nonce: u64,
     ) -> anyhow::Result<()> {
         if !self.is_leader().await {
             return Ok(());
         }
+        match self.request_evm_withdraw_nonce(state, route_def, nonce).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(()),
+            Err(err) => return Err(err),
+        }
+        let router = Arc::clone(self);
+        let state = Arc::clone(state);
+        let route_def = route_def.clone();
+        tokio::spawn(async move {
+            if let Err(err) = router
+                .wait_and_finalize_evm_withdraw(&state, &route_def, nonce)
+                .await
+            {
+                warn!(
+                    "Route {} EVM finalize task failed nonce={}: {}",
+                    state.route_id, nonce, err
+                );
+            }
+        });
+        Ok(())
+    }
+
+    /// Returns Ok(true) when the withdraw is requested on-chain and ready for finalize wait.
+    async fn request_evm_withdraw_nonce(
+        &self,
+        state: &RouteState,
+        route_def: &BridgeRoute,
+        nonce: u64,
+    ) -> anyhow::Result<bool> {
         let ForeignLeg::Evm {
             rpc_url,
             bridge_address,
-            confirmations,
             ..
         } = &route_def.foreign
         else {
-            return Ok(());
+            return Ok(false);
         };
-        let block_confirmations = (*confirmations).max(1);
         let bridge_cfg = match self.require_route_config(state).await {
             Ok(cfg) => cfg,
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(false),
         };
+        let lane = crate::util::inbound_lane_for_route(&bridge_cfg, route_def)?;
         let cast_bin = self.config.read().await.cast_bin.clone();
         let committee_guard = self.committee.read().await;
         let epoch = if committee_guard.size() == 0 {
@@ -979,83 +954,100 @@ impl BridgeRouter {
         };
         drop(committee_guard);
         let pk_hex = secret_key_hex(&self.secret_key)?;
-        let latest_block = eth_block_number(rpc_url).await.ok();
 
-        let nonces: Vec<u64> = state
-            .pending_evm_withdraws
-            .read()
-            .await
-            .keys()
-            .copied()
-            .collect();
-        for nonce in nonces {
+        for attempt in 1..=EVM_REQUEST_ATTEMPTS {
             let snapshot = state.pending_evm_withdraws.read().await.get(&nonce).cloned();
-            let Some(mut item) = snapshot else { continue };
-            if item.failed {
-                continue;
+            let Some(mut item) = snapshot else {
+                return Ok(false);
+            };
+            if item.failed || item.finalized {
+                return Ok(false);
+            }
+            if item.requested && item.requested_block.is_some() {
+                return Ok(true);
             }
 
-            if !item.requested {
-                match cast_request_withdraw(
-                    &cast_bin,
-                    rpc_url,
-                    &pk_hex,
-                    bridge_address,
-                    item.id,
-                    &item.record,
-                    bridge_cfg.foreign_token,
-                    epoch,
-                    &evm_committee,
-                    &[item.signature.clone()],
-                )
-                .await
-                {
-                    Ok(_) => {
-                        info!(
-                            "Route {} requested EVM withdraw nonce={}",
-                            state.route_id, nonce
-                        );
-                        self.emit_route(
-                            &state.route_id,
-                            Some(route_def),
-                            Some(&bridge_cfg),
-                            BridgeEventKind::EvmRequestSent,
-                            BridgeEventLevel::Info,
-                            Some(nonce),
-                            Some(item.record.amount),
-                            "EVM requestWithdraw sent",
-                        )
-                        .await;
-                        item.requested = true;
-                        match eth_block_number(rpc_url).await {
-                            Ok(block) => item.requested_block = Some(block),
-                            Err(err) => {
-                                warn!(
-                                    "Route {} requestWithdraw ok but block number unavailable for {}: {}",
-                                    state.route_id, nonce, err
-                                );
-                                item.requested = false;
-                            }
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            match cast_request_withdraw(
+                &cast_bin,
+                rpc_url,
+                &pk_hex,
+                bridge_address,
+                item.id,
+                &item.record,
+                lane.foreign_token,
+                epoch,
+                &evm_committee,
+                &[item.signature.clone()],
+            )
+            .await
+            {
+                Ok(_) => {
+                    info!(
+                        "Route {} requested EVM withdraw nonce={}",
+                        state.route_id, nonce
+                    );
+                    self.emit_route(
+                        &state.route_id,
+                        Some(route_def),
+                        Some(&bridge_cfg),
+                        BridgeEventKind::EvmRequestSent,
+                        BridgeEventLevel::Info,
+                        Some(nonce),
+                        Some(item.record.amount),
+                        format!("EVM requestWithdraw sent nonce={nonce}"),
+                    )
+                    .await;
+                    item.requested = true;
+                    item.requested_at_ms = Some(now_ms);
+                    match eth_block_number(rpc_url).await {
+                        Ok(block) => {
+                            item.requested_block = Some(block);
+                            state.pending_evm_withdraws.write().await.insert(nonce, item);
+                            return Ok(true);
                         }
-                        state.pending_evm_withdraws.write().await.insert(nonce, item);
-                    }
-                    Err(err) => {
-                        let amount = item.record.amount;
-                        let mut detail = err.to_string();
-                        if detail.contains("estimate gas") || detail.contains("estimateGas") {
-                            detail.push_str(
-                                " (hint: EVM Bridge genesis committee likely mismatches LightPool; \
-                                 redeploy Bridge with VALIDATOR_STAKE matching getCommitteeInfo, default 100)",
+                        Err(err) => {
+                            warn!(
+                                "Route {} requestWithdraw ok but block number unavailable for {}: {}",
+                                state.route_id, nonce, err
                             );
-                        }
-                        if Self::evm_withdraw_permanent_failure(&detail) {
-                            item.failed = true;
+                            item.requested = false;
+                            item.requested_at_ms = None;
                             state.pending_evm_withdraws.write().await.insert(nonce, item);
                         }
-                        warn!(
-                            "Route {} requestWithdraw failed for {}: {}",
-                            state.route_id, nonce, detail
+                    }
+                }
+                Err(err) => {
+                    let amount = item.record.amount;
+                    let detail = err.to_string();
+                    if Self::already_processed_detail(&detail) {
+                        info!(
+                            "Route {} requestWithdraw nonce={} already on chain; continuing to finalize",
+                            state.route_id, nonce
                         );
+                        item.requested = true;
+                        item.requested_at_ms = Some(now_ms);
+                        if let Ok(block) = eth_block_number(rpc_url).await {
+                            item.requested_block = Some(block);
+                        }
+                        let ready = item.requested_block.is_some();
+                        state.pending_evm_withdraws.write().await.insert(nonce, item);
+                        return Ok(ready);
+                    }
+                    let mut detail = detail;
+                    if detail.contains("estimate gas") || detail.contains("estimateGas") {
+                        detail.push_str(
+                            " (hint: EVM Bridge genesis committee likely mismatches LightPool; \
+                             redeploy Bridge with VALIDATOR_STAKE matching getCommitteeInfo, default 100)",
+                        );
+                    }
+                    if Self::evm_withdraw_permanent_failure(&detail) {
+                        item.failed = true;
+                        state.pending_evm_withdraws.write().await.insert(nonce, item);
                         self.emit_route(
                             &state.route_id,
                             Some(route_def),
@@ -1067,24 +1059,105 @@ impl BridgeRouter {
                             detail,
                         )
                         .await;
+                        return Ok(false);
                     }
+                    warn!(
+                        "Route {} requestWithdraw failed for {} (attempt {attempt}/{EVM_REQUEST_ATTEMPTS}): {}",
+                        state.route_id, nonce, detail
+                    );
+                    if attempt == EVM_REQUEST_ATTEMPTS {
+                        self.emit_route(
+                            &state.route_id,
+                            Some(route_def),
+                            Some(&bridge_cfg),
+                            BridgeEventKind::EvmRequestFailed,
+                            BridgeEventLevel::Warn,
+                            Some(nonce),
+                            Some(amount),
+                            detail,
+                        )
+                        .await;
+                        return Ok(false);
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
-                continue;
             }
+        }
+        Ok(false)
+    }
 
-            if item.finalized {
-                continue;
+    async fn wait_and_finalize_evm_withdraw(
+        &self,
+        state: &RouteState,
+        route_def: &BridgeRoute,
+        nonce: u64,
+    ) -> anyhow::Result<()> {
+        let ForeignLeg::Evm {
+            rpc_url,
+            bridge_address,
+            confirmations,
+            ..
+        } = &route_def.foreign
+        else {
+            return Ok(());
+        };
+        let bridge_cfg = self.require_route_config(state).await.ok();
+        let cast_bin = self.config.read().await.cast_bin.clone();
+        let pk_hex = secret_key_hex(&self.secret_key)?;
+        let dispute = fetch_dispute_params(rpc_url, bridge_address)
+            .await
+            .unwrap_or_default();
+        let block_delay = dispute_block_delay(dispute, *confirmations);
+
+        loop {
+            let snapshot = state.pending_evm_withdraws.read().await.get(&nonce).cloned();
+            let Some(mut item) = snapshot else {
+                return Ok(());
+            };
+            if item.failed || item.finalized {
+                return Ok(());
             }
             let Some(requested_block) = item.requested_block else {
-                continue;
+                return Ok(());
             };
-            let Some(latest) = latest_block else {
-                continue;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let latest = match eth_block_number(rpc_url).await {
+                Ok(block) => block,
+                Err(err) => {
+                    debug!(
+                        "Route {} waiting for block number before finalize nonce={}: {}",
+                        state.route_id, nonce, err
+                    );
+                    tokio::time::sleep(Duration::from_millis(EVM_FINALIZE_POLL_MS)).await;
+                    continue;
+                }
             };
-            if latest < requested_block.saturating_add(block_confirmations) {
+            if latest < requested_block.saturating_add(block_delay) {
+                debug!(
+                    "Route {} counting EVM blocks before finalize nonce={} latest={} need>={}",
+                    state.route_id,
+                    nonce,
+                    latest,
+                    requested_block.saturating_add(block_delay).saturating_sub(1)
+                );
+                tokio::time::sleep(Duration::from_millis(EVM_FINALIZE_POLL_MS)).await;
                 continue;
             }
-            match cast_finalize_withdraw(&cast_bin, rpc_url, &pk_hex, bridge_address, item.id).await
+            if let Some(requested_at_ms) = item.requested_at_ms {
+                let ready_at = requested_at_ms
+                    .saturating_add(dispute.period_seconds.saturating_mul(1000))
+                    .saturating_add(1);
+                if now_ms < ready_at {
+                    tokio::time::sleep(Duration::from_millis(EVM_FINALIZE_POLL_MS)).await;
+                    continue;
+                }
+            }
+
+            match cast_finalize_withdraw(&cast_bin, rpc_url, &pk_hex, bridge_address, item.id)
+                .await
             {
                 Ok(_) => {
                     info!(
@@ -1094,37 +1167,47 @@ impl BridgeRouter {
                     self.emit_route(
                         &state.route_id,
                         Some(route_def),
-                        Some(&bridge_cfg),
+                        bridge_cfg.as_ref(),
                         BridgeEventKind::EvmFinalized,
                         BridgeEventLevel::Info,
                         Some(nonce),
                         Some(item.record.amount),
-                        "EVM withdraw finalized",
+                        format!("EVM withdraw finalized nonce={nonce}"),
                     )
                     .await;
                     item.finalized = true;
                     state.pending_evm_withdraws.write().await.insert(nonce, item);
+                    return Ok(());
                 }
                 Err(err) => {
+                    let detail = err.to_string();
+                    if still_in_dispute_error(&detail) {
+                        debug!(
+                            "Route {} finalizeWithdraw nonce={} still in dispute; retrying",
+                            state.route_id, nonce
+                        );
+                        tokio::time::sleep(Duration::from_millis(EVM_FINALIZE_POLL_MS)).await;
+                        continue;
+                    }
                     warn!(
                         "Route {} finalizeWithdraw failed for {}: {}",
-                        state.route_id, nonce, err
+                        state.route_id, nonce, detail
                     );
                     self.emit_route(
                         &state.route_id,
                         Some(route_def),
-                        Some(&bridge_cfg),
+                        bridge_cfg.as_ref(),
                         BridgeEventKind::EvmFinalizeFailed,
                         BridgeEventLevel::Warn,
                         Some(nonce),
-                        None,
-                        err.to_string(),
+                        Some(item.record.amount),
+                        format!("nonce={nonce}: {detail}"),
                     )
                     .await;
+                    tokio::time::sleep(Duration::from_millis(EVM_FINALIZE_POLL_MS)).await;
                 }
             }
         }
-        Ok(())
     }
 
     async fn try_submit_lp_deposit_nonce(
@@ -1164,11 +1247,11 @@ impl BridgeRouter {
             &state.route_id,
             Some(route_def),
             bridge_cfg.as_ref(),
-            BridgeEventKind::DepositSubmitted,
+            BridgeEventKind::ConfirmWithdrawSubmitted,
             BridgeEventLevel::Info,
             Some(nonce),
             Some(item.message.amount),
-            "submitting foreign deposit",
+            "submitting foreign withdraw confirmation",
         )
         .await;
         match foreign_client
@@ -1183,18 +1266,18 @@ impl BridgeRouter {
         {
             Ok(receipt) if receipt.is_success() => {
                 info!(
-                    "Route {} submitted foreign deposit nonce={}",
+                    "Route {} confirmed foreign withdraw nonce={}",
                     state.route_id, nonce
                 );
                 self.emit_route(
                     &state.route_id,
                     Some(route_def),
                     bridge_cfg.as_ref(),
-                    BridgeEventKind::DepositOk,
+                    BridgeEventKind::ConfirmWithdrawOk,
                     BridgeEventLevel::Info,
                     Some(nonce),
                     Some(item.message.amount),
-                    "foreign deposit confirmed",
+                    "foreign withdraw confirmed",
                 )
                 .await;
                 item.submitted = true;
@@ -1204,18 +1287,18 @@ impl BridgeRouter {
                 let detail = format!("{:?}", receipt.status);
                 if Self::already_processed_detail(&detail) {
                     info!(
-                        "Route {} foreign deposit nonce={} already processed",
+                        "Route {} foreign withdraw nonce={} already processed",
                         state.route_id, nonce
                     );
                     self.emit_route(
                         &state.route_id,
                         Some(route_def),
                         bridge_cfg.as_ref(),
-                        BridgeEventKind::DepositOk,
+                        BridgeEventKind::ConfirmWithdrawOk,
                         BridgeEventLevel::Info,
                         Some(nonce),
                         Some(item.message.amount),
-                        "foreign deposit already processed",
+                        "foreign withdraw already processed",
                     )
                     .await;
                     item.submitted = true;
@@ -1223,14 +1306,14 @@ impl BridgeRouter {
                     return Ok(());
                 }
                 warn!(
-                    "Route {} foreign deposit failed nonce={}: {}",
+                    "Route {} foreign withdraw failed nonce={}: {}",
                     state.route_id, nonce, detail
                 );
                 self.emit_route(
                     &state.route_id,
                     Some(route_def),
                     bridge_cfg.as_ref(),
-                    BridgeEventKind::DepositFailed,
+                    BridgeEventKind::ConfirmWithdrawFailed,
                     BridgeEventLevel::Error,
                     Some(nonce),
                     None,
@@ -1249,7 +1332,7 @@ impl BridgeRouter {
                 let detail = err.to_string();
                 if Self::already_processed_detail(&detail) {
                     info!(
-                        "Route {} foreign deposit nonce={} already processed",
+                        "Route {} foreign withdraw nonce={} already processed",
                         state.route_id, nonce
                     );
                     item.submitted = true;
@@ -1257,14 +1340,14 @@ impl BridgeRouter {
                     return Ok(());
                 }
                 warn!(
-                    "Route {} foreign deposit error nonce={}: {}",
+                    "Route {} foreign withdraw error nonce={}: {}",
                     state.route_id, nonce, detail
                 );
                 self.emit_route(
                     &state.route_id,
                     Some(route_def),
                     bridge_cfg.as_ref(),
-                    BridgeEventKind::DepositFailed,
+                    BridgeEventKind::ConfirmWithdrawFailed,
                     BridgeEventLevel::Error,
                     Some(nonce),
                     None,
@@ -1301,6 +1384,7 @@ impl BridgeRouter {
         route_def: &BridgeRoute,
         log: &Value,
         bridge_cfg: &BridgeConfig,
+        lane: &lightpool_types::module_types::bridge::InboundTokenLane,
         expected_token: [u8; 20],
         source_chain_id: u64,
     ) -> anyhow::Result<()> {
@@ -1315,7 +1399,7 @@ impl BridgeRouter {
         let deposit_id = topic_u64(topics[1].as_str().unwrap_or_default())?;
         {
             let mut seen = state.seen_deposits.write().await;
-            if !seen.insert(deposit_id) {
+            if !seen.insert((lane.lane_index, deposit_id)) {
                 return Ok(());
             }
         }
@@ -1353,9 +1437,10 @@ impl BridgeRouter {
         )?;
 
         let message = BridgeDepositMessage {
+            lane_index: lane.lane_index,
             message_id: deposit_id,
             source_chain_id,
-            token: bridge_cfg.token,
+            token: lane.lp_token,
             amount,
             sender_foreign,
             recipient: Address::new(recipient_bytes),
@@ -1394,9 +1479,10 @@ impl BridgeRouter {
         source_chain_id: u64,
         withdraw: &lightpool_types::module_types::bridge::OutboundWithdrawRecord,
     ) -> anyhow::Result<()> {
+        let lane = crate::util::inbound_lane_for_route(bridge_cfg, route_def)?;
         {
             let mut seen = state.seen_deposits.write().await;
-            if !seen.insert(withdraw.nonce) {
+            if !seen.insert((lane.lane_index, withdraw.nonce)) {
                 return Ok(());
             }
         }
@@ -1418,9 +1504,10 @@ impl BridgeRouter {
         };
 
         let message = BridgeDepositMessage {
+            lane_index: lane.lane_index,
             message_id: withdraw.nonce,
             source_chain_id,
-            token: bridge_cfg.token,
+            token: lane.lp_token,
             amount: withdraw.amount,
             sender_foreign: *withdraw.sender.as_bytes(),
             recipient: Address::new(withdraw.foreign_recipient),

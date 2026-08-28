@@ -19,6 +19,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use crate::lp::LightpoolClient;
 use crate::route_config::{BridgeRoute, ForeignLeg};
 use crate::router::{BridgeRouter, RouteState};
 use crate::util::parse_contract_address;
@@ -28,6 +29,7 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 #[derive(Debug, Clone, Deserialize)]
 struct OutboundWithdrawEventPayload {
     bridge: ContractAddress,
+    lane_index: u32,
     nonce: u64,
     sender: lightpool_types::Address,
     foreign_recipient: [u8; 20],
@@ -37,6 +39,7 @@ struct OutboundWithdrawEventPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 struct InboundWithdrawEventPayload {
+    lane_index: u32,
     nonce: u64,
     sender: lightpool_types::Address,
     foreign_recipient: [u8; 20],
@@ -136,9 +139,15 @@ async fn foreign_subscribe_loop(
             Message::Text(text) => {
                 if let Some(block) = parse_receipt_block_notification(&text) {
                     for withdraw in extract_outbound_withdraws(&block, outbound) {
-                        router
+                        if let Err(err) = router
                             .on_lp_foreign_withdraw(state, route_def, withdraw)
-                            .await?;
+                            .await
+                        {
+                            warn!(
+                                "Route {} foreign withdraw handling failed: {err}",
+                                state.route_id
+                            );
+                        }
                     }
                 }
             }
@@ -154,8 +163,8 @@ async fn foreign_subscribe_loop(
 }
 
 async fn local_subscribe_loop(
-    router: &BridgeRouter,
-    state: &RouteState,
+    router: &Arc<BridgeRouter>,
+    state: &Arc<RouteState>,
     route_def: &BridgeRoute,
     local_rpc_url: &str,
 ) -> anyhow::Result<()> {
@@ -166,6 +175,8 @@ async fn local_subscribe_loop(
         state.route_id, ws_url
     );
 
+    catch_up_local_withdraws(router, state, route_def, local_rpc_url).await;
+
     let mut ws = connect_ws(&ws_url).await?;
     subscribe_receipt_blocks(&mut ws).await?;
 
@@ -175,9 +186,15 @@ async fn local_subscribe_loop(
             Message::Text(text) => {
                 if let Some(block) = parse_receipt_block_notification(&text) {
                     for withdraw in extract_inbound_withdraws(&block, inbound) {
-                        router
+                        if let Err(err) = router
                             .on_lp_local_withdraw(state, route_def, withdraw)
-                            .await?;
+                            .await
+                        {
+                            warn!(
+                                "Route {} local withdraw handling failed: {err}",
+                                state.route_id
+                            );
+                        }
                     }
                 }
             }
@@ -190,6 +207,43 @@ async fn local_subscribe_loop(
     }
 
     Ok(())
+}
+
+async fn catch_up_local_withdraws(
+    router: &Arc<BridgeRouter>,
+    state: &Arc<RouteState>,
+    route_def: &BridgeRoute,
+    local_rpc_url: &str,
+) {
+    if !matches!(route_def.foreign, ForeignLeg::Lightpool { .. }) {
+        return;
+    }
+    let Ok(inbound) = parse_contract_address(&route_def.local_inbound.bridge_contract) else {
+        return;
+    };
+    let client = LightpoolClient::new(local_rpc_url);
+    let Ok(cfg) = client.fetch_bridge_config(inbound).await else {
+        return;
+    };
+    for lane in &cfg.lanes {
+        for nonce in 1..lane.next_withdraw_nonce {
+            let Ok(record) = client
+                .fetch_withdraw_record(inbound, lane.lane_index, nonce)
+                .await
+            else {
+                continue;
+            };
+            if record.status != BridgeWithdrawStatus::Pending {
+                continue;
+            }
+            if let Err(err) = router.on_lp_local_withdraw(state, route_def, record).await {
+                warn!(
+                    "Route {} catch-up withdraw lane={} nonce={}: {err}",
+                    state.route_id, lane.lane_index, nonce
+                );
+            }
+        }
+    }
 }
 
 async fn connect_ws(ws_url: &str) -> anyhow::Result<WsStream> {
@@ -304,6 +358,7 @@ fn parse_outbound_withdraw_event(
     };
     let payload: OutboundWithdrawEventPayload = bincode::deserialize(bytes).ok()?;
     Some(OutboundWithdrawRecord {
+        lane_index: payload.lane_index,
         nonce: payload.nonce,
         sender: payload.sender,
         foreign_recipient: payload.foreign_recipient,
@@ -331,6 +386,7 @@ fn parse_inbound_withdraw_event(
     };
     let payload: InboundWithdrawEventPayload = bincode::deserialize(bytes).ok()?;
     Some(BridgeWithdrawRecord {
+        lane_index: payload.lane_index,
         nonce: payload.nonce,
         sender: payload.sender,
         foreign_recipient: payload.foreign_recipient,

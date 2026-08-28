@@ -25,15 +25,13 @@ pub enum BridgeEventKind {
     ConfirmDepOk,
     ConfirmDepFailed,
     WithdrawSeen,
+    ConfirmWithdrawSubmitted,
+    ConfirmWithdrawOk,
+    ConfirmWithdrawFailed,
     EvmRequestSent,
     EvmRequestFailed,
     EvmFinalized,
     EvmFinalizeFailed,
-    DepositSubmitted,
-    DepositOk,
-    DepositFailed,
-    ConfigUpdated,
-    RouteReloaded,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -214,7 +212,8 @@ fn query_page(
     let total: u64 = conn.query_row(
         "SELECT COUNT(*) FROM bridge_events
          WHERE (?1 IS NULL OR route_id = ?1)
-           AND (?2 IS NULL OR token = ?2)",
+           AND (?2 IS NULL OR token = ?2)
+           AND kind NOT IN ('config_updated', 'route_reloaded')",
         params![route_id, token],
         |row| row.get(0),
     )?;
@@ -229,6 +228,7 @@ fn query_page(
          FROM bridge_events
          WHERE (?1 IS NULL OR route_id = ?1)
            AND (?2 IS NULL OR token = ?2)
+           AND kind NOT IN ('config_updated', 'route_reloaded')
          ORDER BY ts_ms DESC, id DESC
          LIMIT ?3 OFFSET ?4",
     )?;
@@ -272,15 +272,13 @@ fn event_kind_name(kind: BridgeEventKind) -> &'static str {
         BridgeEventKind::ConfirmDepOk => "confirm_dep_ok",
         BridgeEventKind::ConfirmDepFailed => "confirm_dep_failed",
         BridgeEventKind::WithdrawSeen => "withdraw_seen",
+        BridgeEventKind::ConfirmWithdrawSubmitted => "confirm_withdraw_submitted",
+        BridgeEventKind::ConfirmWithdrawOk => "confirm_withdraw_ok",
+        BridgeEventKind::ConfirmWithdrawFailed => "confirm_withdraw_failed",
         BridgeEventKind::EvmRequestSent => "evm_request_sent",
         BridgeEventKind::EvmRequestFailed => "evm_request_failed",
         BridgeEventKind::EvmFinalized => "evm_finalized",
         BridgeEventKind::EvmFinalizeFailed => "evm_finalize_failed",
-        BridgeEventKind::DepositSubmitted => "deposit_submitted",
-        BridgeEventKind::DepositOk => "deposit_ok",
-        BridgeEventKind::DepositFailed => "deposit_failed",
-        BridgeEventKind::ConfigUpdated => "config_updated",
-        BridgeEventKind::RouteReloaded => "route_reloaded",
     }
 }
 
@@ -299,15 +297,16 @@ fn parse_kind(raw: &str) -> anyhow::Result<BridgeEventKind> {
         "confirm_dep_ok" => BridgeEventKind::ConfirmDepOk,
         "confirm_dep_failed" => BridgeEventKind::ConfirmDepFailed,
         "withdraw_seen" => BridgeEventKind::WithdrawSeen,
+        "confirm_withdraw_submitted" => BridgeEventKind::ConfirmWithdrawSubmitted,
+        "confirm_withdraw_ok" => BridgeEventKind::ConfirmWithdrawOk,
+        "confirm_withdraw_failed" => BridgeEventKind::ConfirmWithdrawFailed,
+        "deposit_submitted" => BridgeEventKind::ConfirmWithdrawSubmitted,
+        "deposit_ok" => BridgeEventKind::ConfirmWithdrawOk,
+        "deposit_failed" => BridgeEventKind::ConfirmWithdrawFailed,
         "evm_request_sent" => BridgeEventKind::EvmRequestSent,
         "evm_request_failed" => BridgeEventKind::EvmRequestFailed,
         "evm_finalized" => BridgeEventKind::EvmFinalized,
         "evm_finalize_failed" => BridgeEventKind::EvmFinalizeFailed,
-        "deposit_submitted" => BridgeEventKind::DepositSubmitted,
-        "deposit_ok" => BridgeEventKind::DepositOk,
-        "deposit_failed" => BridgeEventKind::DepositFailed,
-        "config_updated" => BridgeEventKind::ConfigUpdated,
-        "route_reloaded" => BridgeEventKind::RouteReloaded,
         other => anyhow::bail!("unknown bridge event kind: {other}"),
     })
 }

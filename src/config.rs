@@ -66,6 +66,8 @@ pub struct BridgeLinkConfig {
     pub local: LocalChainConfig,
     #[serde(default)]
     pub routes: Vec<BridgeRoute>,
+    #[serde(default)]
+    pub bridges: Vec<crate::route_config::BridgeHub>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +98,7 @@ impl Default for BridgeLinkConfig {
             cast_bin: default_cast_bin(),
             local: LocalChainConfig::default(),
             routes: Vec::new(),
+            bridges: Vec::new(),
         }
     }
 }

@@ -6,11 +6,6 @@ import {MockUSDT} from "../src/MockUSDT.sol";
 import {Bridge} from "../src/Bridge.sol";
 import {Committee} from "../src/Committee.sol";
 
-/// @dev Local deploy for reth --dev.
-/// Set VALIDATOR_ETH to the LightPool validator eth address (same as LP wallet address).
-/// Usage:
-///   VALIDATOR_ETH=0x... forge script script/DeployLocal.s.sol:DeployLocal \
-///     --rpc-url http://127.0.0.1:8545 --broadcast --private-key $PK
 contract DeployLocal is Script {
     function run() external {
         address deployer = msg.sender;
@@ -27,17 +22,15 @@ contract DeployLocal is Script {
         vm.startBroadcast();
         MockUSDT usdt = new MockUSDT();
         Bridge bridge = new Bridge(
-            address(usdt),
             genesis,
-            5, // disputePeriodSeconds (short for local)
-            1000, // blockDurationMillis (~1s blocks)
+            5,
+            1000,
             validators
         );
+        bridge.registerToken(address(usdt));
 
-        // Local faucet: large supply for validator/maker + optional app user.
-        // Amounts are whole USDT * 1e6 (token decimals).
-        uint256 makerAmount = 1_000_000_000_000e6; // 1e12 USDT (validator/maker)
-        uint256 userAmount = 10_000e6; // 10_000 USDT (frontend user)
+        uint256 makerAmount = 1_000_000_000_000e6;
+        uint256 userAmount = 10_000e6;
         address user = vm.envOr(
             "USER_ETH",
             address(0xC019cECd52FE1f68b53daf766c4aF0Dea667A2c7)

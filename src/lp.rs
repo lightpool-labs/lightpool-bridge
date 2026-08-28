@@ -171,10 +171,12 @@ impl LightpoolClient {
     pub async fn fetch_withdraw_record(
         &self,
         contract: ContractAddress,
+        lane_index: u32,
         nonce: u64,
     ) -> anyhow::Result<BridgeWithdrawRecord> {
         #[derive(Serialize)]
         struct Params {
+            lane_index: u32,
             nonce: u64,
         }
         let bytes = self
@@ -183,7 +185,7 @@ impl LightpoolClient {
                 Action::new(
                     contract,
                     GET_WITHDRAW_ACTION,
-                    bincode::serialize(&Params { nonce })?,
+                    bincode::serialize(&Params { lane_index, nonce })?,
                 ),
             )
             .await?;

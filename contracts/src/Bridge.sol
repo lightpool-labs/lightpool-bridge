@@ -3,8 +3,8 @@ pragma solidity ^0.8.24;
 
 import {Committee, CommitteeLib} from "./Committee.sol";
 
-/// @title LightPool EVM Bridge
-/// @notice Lock/unlock ERC20 with hot-validator quorum, pending dispute, and hot cancel.
+/// @title LightPool EVM Bridge Hub
+/// @notice Lock/unlock multiple ERC20 tokens with hot-validator quorum.
 contract Bridge {
     using CommitteeLib for Committee;
 
@@ -49,7 +49,10 @@ contract Bridge {
     uint64 public totalStake;
     uint64 public disputePeriodSeconds;
     uint64 public blockDurationMillis;
-    address public immutable token;
+    address public immutable deployer;
+
+    mapping(address => bool) public registeredTokens;
+    mapping(address => uint64) public nextDepositId;
 
     mapping(address => bool) public finalizers;
     mapping(bytes32 => PendingWithdraw) public pendingWithdrawals;
@@ -59,8 +62,7 @@ contract Bridge {
 
     PendingCommitteeUpdate public pendingCommitteeUpdate;
 
-    uint64 public nextDepositId;
-
+    event TokenRegistered(address indexed token);
     event DepositInitiated(
         uint64 indexed depositId,
         address indexed sender,
@@ -85,18 +87,23 @@ contract Bridge {
     error NotFinalizer();
     error TransferFailed();
     error BadAmount();
+    error TokenNotRegistered();
+    error NotDeployer();
+
+    modifier onlyDeployer() {
+        if (msg.sender != deployer) revert NotDeployer();
+        _;
+    }
 
     constructor(
-        address token_,
         Committee memory genesis,
         uint64 disputePeriodSeconds_,
         uint64 blockDurationMillis_,
         address[] memory finalizerList
     ) {
-        require(token_ != address(0), "token");
         require(genesis.validators.length == genesis.stakes.length, "len");
         require(genesis.validators.length > 0, "empty");
-        token = token_;
+        deployer = msg.sender;
         committeeHash = genesis.hash();
         epoch = genesis.epoch;
         totalStake = genesis.totalStake();
@@ -107,10 +114,17 @@ contract Bridge {
         }
     }
 
-    function deposit(uint64 amount, address lightpoolRecipient) external {
+    function registerToken(address token) external onlyDeployer {
+        require(token != address(0), "token");
+        registeredTokens[token] = true;
+        emit TokenRegistered(token);
+    }
+
+    function deposit(address token, uint64 amount, address lightpoolRecipient) external {
+        if (!registeredTokens[token]) revert TokenNotRegistered();
         if (amount == 0) revert BadAmount();
-        if (!transferFrom(msg.sender, address(this), amount)) revert TransferFailed();
-        uint64 depositId = ++nextDepositId;
+        if (!transferFrom(token, msg.sender, address(this), amount)) revert TransferFailed();
+        uint64 depositId = ++nextDepositId[token];
         emit DepositInitiated(
             depositId,
             msg.sender,
@@ -127,6 +141,7 @@ contract Bridge {
         Signature[] calldata signatures
     ) external {
         _checkCommittee(active);
+        if (!registeredTokens[req.token]) revert TokenNotRegistered();
         if (pendingWithdrawals[req.id].exists || finalizedWithdrawals[req.id]
             || cancelledWithdrawals[req.id]) {
             revert AlreadyProcessed();
@@ -178,10 +193,11 @@ contract Bridge {
         if (!p.exists) revert NotPending();
         if (_inDispute(p.requestedTime, p.requestedBlock)) revert StillInDispute();
         address destination = p.destination;
+        address token = p.token;
         uint64 amount = p.amount;
         delete pendingWithdrawals[id];
         finalizedWithdrawals[id] = true;
-        if (!transfer(destination, amount)) revert TransferFailed();
+        if (!transfer(token, destination, amount)) revert TransferFailed();
         emit WithdrawFinalized(id, destination, amount);
     }
 
@@ -300,14 +316,17 @@ contract Bridge {
         usedMessages[digest] = true;
     }
 
-    function transferFrom(address from, address to, uint64 amount) internal returns (bool) {
+    function transferFrom(address token, address from, address to, uint64 amount)
+        internal
+        returns (bool)
+    {
         (bool ok, bytes memory data) = token.call(
             abi.encodeWithSelector(0x23b872dd, from, to, uint256(amount))
         );
         return ok && (data.length == 0 || abi.decode(data, (bool)));
     }
 
-    function transfer(address to, uint64 amount) internal returns (bool) {
+    function transfer(address token, address to, uint64 amount) internal returns (bool) {
         (bool ok, bytes memory data) =
             token.call(abi.encodeWithSelector(0xa9059cbb, to, uint256(amount)));
         return ok && (data.length == 0 || abi.decode(data, (bool)));

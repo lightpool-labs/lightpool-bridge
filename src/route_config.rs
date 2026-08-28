@@ -43,10 +43,50 @@ pub enum ForeignLeg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeTokenRoute {
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub lp_token: String,
+    pub foreign_token: String,
+    #[serde(default = "default_confirmations")]
+    pub confirmations: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ForeignLegShared {
+    Evm {
+        rpc_url: String,
+        chain_id: u64,
+        bridge_address: String,
+    },
+    Lightpool {
+        rpc_url: String,
+        chain_id: u64,
+        outbound_bridge_contract: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeHub {
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bridge_contract: String,
+    pub foreign: ForeignLegShared,
+    #[serde(default)]
+    pub routes: Vec<BridgeTokenRoute>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgeRoute {
     pub id: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bridge_id: String,
     pub local_inbound: LocalInboundConfig,
     pub foreign: ForeignLeg,
 }
@@ -76,12 +116,60 @@ impl Default for LocalChainConfig {
     }
 }
 
+pub fn hub_route_to_bridge_route(hub: &BridgeHub, route: &BridgeTokenRoute) -> BridgeRoute {
+    let foreign = match &hub.foreign {
+        ForeignLegShared::Evm {
+            rpc_url,
+            chain_id,
+            bridge_address,
+        } => ForeignLeg::Evm {
+            rpc_url: rpc_url.clone(),
+            chain_id: *chain_id,
+            bridge_address: bridge_address.clone(),
+            token_address: route.foreign_token.clone(),
+            confirmations: route.confirmations,
+            start_block: 0,
+        },
+        ForeignLegShared::Lightpool {
+            rpc_url,
+            chain_id,
+            outbound_bridge_contract,
+        } => ForeignLeg::Lightpool {
+            rpc_url: rpc_url.clone(),
+            chain_id: *chain_id,
+            outbound_bridge_contract: outbound_bridge_contract.clone(),
+            foreign_token: route.foreign_token.clone(),
+        },
+    };
+    BridgeRoute {
+        id: route.id.clone(),
+        enabled: hub.enabled && route.enabled,
+        bridge_id: hub.id.clone(),
+        local_inbound: LocalInboundConfig {
+            bridge_contract: hub.bridge_contract.clone(),
+            lp_token: route.lp_token.clone(),
+        },
+        foreign,
+    }
+}
+
+pub fn effective_routes(cfg: &BridgeLinkConfig) -> Vec<BridgeRoute> {
+    let mut out = cfg.routes.clone();
+    for hub in &cfg.bridges {
+        for route in &hub.routes {
+            out.push(hub_route_to_bridge_route(hub, route));
+        }
+    }
+    out
+}
+
 pub fn validate_config(cfg: &BridgeLinkConfig) -> Result<(), String> {
-    if cfg.routes.is_empty() {
+    let routes = effective_routes(cfg);
+    if routes.is_empty() {
         return Ok(());
     }
     let mut seen = std::collections::HashSet::new();
-    for route in &cfg.routes {
+    for route in &routes {
         let id = route.id.trim();
         if id.is_empty() {
             return Err("route id must not be empty".to_string());
@@ -93,6 +181,7 @@ pub fn validate_config(cfg: &BridgeLinkConfig) -> Result<(), String> {
             ForeignLeg::Evm {
                 rpc_url,
                 bridge_address,
+                token_address,
                 ..
             } => {
                 if route.enabled && rpc_url.trim().is_empty() {
@@ -100,6 +189,9 @@ pub fn validate_config(cfg: &BridgeLinkConfig) -> Result<(), String> {
                 }
                 if route.enabled && bridge_address.trim().is_empty() {
                     return Err(format!("route {}: evm bridge_address is empty", id));
+                }
+                if route.enabled && token_address.trim().is_empty() {
+                    return Err(format!("route {}: evm token_address is empty", id));
                 }
             }
             ForeignLeg::Lightpool {
@@ -127,6 +219,10 @@ pub fn validate_config(cfg: &BridgeLinkConfig) -> Result<(), String> {
 }
 
 impl BridgeLinkConfig {
+    pub fn all_routes(&self) -> Vec<BridgeRoute> {
+        effective_routes(self)
+    }
+
     pub fn normalize_routes(&mut self) {
         if self.local.rpc_url.is_empty() {
             self.local.rpc_url = self.lightpool_rpc_url.clone();

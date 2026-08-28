@@ -2,6 +2,18 @@
 
 Linear guide: **local LightPool** + **Reth (EVM)** + **foreign LightPool** + **lightpool-bridge**. Follow the steps in order.
 
+## Hub model (multi-token)
+
+Each leg uses **one bridge hub** with **multiple token lanes** (one lane = one foreign token ↔ one LP token):
+
+| Leg | On-chain hub | Register token / lane |
+| --- | --- | --- |
+| **Reth → local LP** | EVM `Bridge` contract (`$BRIDGE`) | Deployer: `registerToken(erc20)` per ERC20 |
+| **Local LP inbound** | Inbound instance (`$INBOUND_BRIDGE`, usually `0x06…0001`) | `init-bridge` creates hub + first lane; more lanes via `reg_lane` |
+| **Foreign LP outbound** | Outbound instance (`$OUTBOUND_BRIDGE`) | `create-outbound-bridge` creates hub + first lane; more lanes via `reg_lane` |
+
+**lightpool-bridge** watches **one route per token lane**. Several routes may share the same EVM `$BRIDGE` and local `$INBOUND_BRIDGE` — they differ by **token address** and **LP token**. Config supports flat `routes[]` (Admin UI) or grouped `bridges[]` (JSON); the link expands both the same way.
+
 ```text
 ~/work/lightpool-labs/
 ├── lightpool-node/
@@ -122,11 +134,13 @@ python3 00_bridge_bootstrap.py --phase create
 python3 01_lp_foreign_bootstrap.py --phase all
 ```
 
-- `deploy` — MockUSDT + EVM Bridge → `.env.bridge`, empty-route `bridge-config.json`
-- `create` — inbound bridge on local LP → `LP_USDT`, `INBOUND_BRIDGE` in `.env.bridge` (first instance, usually `…0001`)
-- `01 --phase all` — **once** — LP-foreign inbound + foreign USDT/outbound → `.env.lp-foreign` (next instance, often `…0002` on a clean chain; **your addresses come from the script output, not from docs**)
+- `deploy` — MockUSDT + EVM **Bridge hub** (`registerToken` for USDT) → `.env.bridge`, empty `bridge-config.json`
+- `create` — inbound **hub + first lane** on local LP (`init-bridge`) → `LP_USDT`, `INBOUND_BRIDGE` in `.env.bridge` (first instance, usually `…0001`)
+- `01 --phase all` — **once** — LP-foreign inbound hub + foreign USDT/outbound hub → `.env.lp-foreign` (next inbound instance, often `…0002` on a clean chain; **your addresses come from the script output, not from docs**)
 
 Do **not** run `01 --phase all` twice. Each run allocates the next inbound instance (`…0002`, then `…0003`, …) and orphans the previous Admin UI route.
+
+**Second EVM token on the same hub:** deploy another Mock ERC20 on Reth, `registerToken` on `$BRIDGE`, `reg_lane` on the **same** `$INBOUND_BRIDGE`, then add another EVM route in Admin UI (same bridge contract, new token + LP token). See [Adding another token lane](#adding-another-token-lane-reth-hub) below.
 
 First run failed after `local-init`? Recover without a new instance:
 
@@ -147,16 +161,18 @@ Bridge transport (LightPool routes are fully WebSocket-driven; no poll loop):
 
 - **Local LP (all routes)** — local inbound `withdraw` via WebSocket (local RPC port **+ 100**, e.g. `26300` → `26400`). Foreign `deposit` submits in the same WS handler (ms-level).
 - **LightPool foreign route** — foreign `outbound-withdraw` via WebSocket (foreign RPC port **+ 100**, e.g. `27300` → `27400`). Local `confirm_dep` submits in the same WS handler.
-- **Reth route** — EVM deposit logs via WebSocket (`:8546`). Local withdraw via local LP WebSocket. EVM `requestWithdraw` submits immediately; `finalizeWithdraw` runs after `confirmations` blocks on the route.
+- **Reth route** — EVM `DepositInitiated` logs via WebSocket (`:8546`), filtered by **token address** per route. Local withdraw via local LP WebSocket. EVM `requestWithdraw` runs immediately on withdraw; the same handler then waits for the on-chain dispute window (blocks + time) and submits `finalizeWithdraw` (no EVM poll loop).
 
 1. **Settings** → **Wallet path** → `~/.lightpool/wallet.json` → **Save**  
    Must be the **local validator wallet** (same key used when bootstrap runs `create-outbound-bridge`). If this path points at a different key than the outbound bridge authorities, foreign deposits fail with `bridge voter not in authorities`.
-2. **+ Add route** → **EVM (Reth)** — copy **Reth route** fields below → **Save route**
+2. **+ Add route** → **EVM (ERC20)** — copy **Reth route** fields below → **Save route**
 3. **+ Add route** → **LightPool** — copy **LightPool foreign route** fields from `source "$ENV_LP"` below (must match `LOCAL_INBOUND_BRIDGE` + `LOCAL_LP_USDT` in `.env.lp-foreign`)
+
+For a **second token** on the same Reth bridge hub, add another route with the **same** local inbound bridge and EVM bridge contract, but different **EVM token address** and **Local LP token** (after registering the lane on-chain).
 
 **Address map (clean chain, single bootstrap each):**
 
-| Leg | Local inbound | Local LP token |
+| Leg | Local inbound hub | LP token (lane) |
 | --- | --- | --- |
 | Reth | `$INBOUND_BRIDGE` (usually `…0001`) | `$LP_USDT` (usually `…0001`) |
 | LP foreign | `$LOCAL_INBOUND_BRIDGE` (usually `…0002`) | `$LOCAL_LP_USDT` (usually `…0002`) |
@@ -169,16 +185,13 @@ Re-running bootstrap bumps the index (`…0003`, …). Always use the values pri
 source "$ENV_BRIDGE"
 
 echo "Route ID:                  reth-usdt"
-echo "Enabled:                   yes"
-echo "Kind:                      evm"
-echo "Local inbound bridge:      $INBOUND_BRIDGE"
+echo "Local bridge contract:     $INBOUND_BRIDGE"
 echo "Local LP token:            $LP_USDT"
 echo "EVM RPC:                   $EVM_RPC_URL"
-echo "Chain ID:                  $EVM_CHAIN_ID"
-echo "Bridge contract:           $BRIDGE"
-echo "Token address:             $ETH_USDT"
-echo "Confirmations:             1"
-echo "Start block:               0"
+echo "EVM chain ID:              $EVM_CHAIN_ID"
+echo "EVM bridge contract:       $BRIDGE"
+echo "EVM token address:         $ETH_USDT"
+echo "EVM block confirmations:   1"
 ```
 
 ### LightPool foreign route — Admin UI fields
@@ -187,17 +200,51 @@ echo "Start block:               0"
 source "$ENV_LP"
 
 echo "Route ID:                  foreign-lp-usdt"
-echo "Enabled:                   yes"
-echo "Kind:                      lightpool"
-echo "Local inbound bridge:      $LOCAL_INBOUND_BRIDGE"
+echo "Local bridge contract:     $LOCAL_INBOUND_BRIDGE"
 echo "Local LP token:            $LOCAL_LP_USDT"
 echo "Foreign LP RPC:            $LP_FOREIGN_RPC"
 echo "Foreign chain ID:          $FOREIGN_CHAIN_ID"
-echo "Outbound bridge contract:  $OUTBOUND_BRIDGE"
+echo "Foreign bridge contract:   $OUTBOUND_BRIDGE"
 echo "Foreign token:             $FOREIGN_USDT"
 ```
 
+### Optional — `bridges[]` in `bridge-config.json`
+
+Admin UI writes flat `routes[]`. For several tokens under one hub you can also use grouped config (same data, expanded by the link at runtime):
+
+```json
+{
+  "wallet_path": "/home/you/.lightpool/wallet.json",
+  "local": { "rpc_url": "http://127.0.0.1:26300", "chain_id": 1 },
+  "bridges": [
+    {
+      "id": "reth-main",
+      "enabled": true,
+      "bridge_contract": "0x0600000000000001",
+      "foreign": {
+        "kind": "evm",
+        "rpc_url": "http://127.0.0.1:8545",
+        "chain_id": 1337,
+        "bridge_address": "0x..."
+      },
+      "routes": [
+        {
+          "id": "usdt",
+          "enabled": true,
+          "lp_token": "0x0200000000000001",
+          "foreign_token": "0x...",
+          "confirmations": 1
+        }
+      ]
+    }
+  ],
+  "routes": []
+}
+```
+
 ## Step 8 — Deposit via Reth (EVM → local)
+
+EVM **Bridge hub** deposit: pass the **ERC20 token address** as the first argument.
 
 ```bash
 source "$ENV_BRIDGE"
@@ -208,7 +255,7 @@ cast send "$ETH_USDT" "transfer(address,uint256)" "$RECV" "$AMOUNT" \
   --rpc-url "$RETH_RPC" --private-key "$PK"
 cast send "$ETH_USDT" "approve(address,uint256)" "$BRIDGE" "$AMOUNT" \
   --rpc-url "$RETH_RPC" --private-key "$RECV_PK"
-cast send "$BRIDGE" "deposit(uint64,address)" "$AMOUNT" "$LP_RECIPIENT" \
+cast send "$BRIDGE" "deposit(address,uint64,address)" "$ETH_USDT" "$AMOUNT" "$LP_RECIPIENT" \
   --rpc-url "$RETH_RPC" --private-key "$RECV_PK"
 
 lightpool --rpc-url "$LP_RPC" balance --token-address "$LP_USDT" --account "$LP_RECIPIENT"
@@ -267,13 +314,13 @@ lightpool --rpc-url "$LP_RPC" bridge-withdraw \
 lightpool --rpc-url "$LP_FOREIGN_RPC" balance --token-address "$FOREIGN_USDT" --account "$FOREIGN_RECIPIENT"
 ```
 
-Wait for **`deposit_ok`** in Terminal 4.
+Wait for **`confirm_withdraw_ok`** in Terminal 4.
 
-### `deposit_failed` — bridge voter not in authorities
+### `confirm_withdraw_failed` — bridge voter not in authorities
 
 Bootstrap before this fix used the foreign validator wallet for `create-outbound-bridge`, while the bridge signs deposits with `~/.lightpool/wallet.json`. Outbound bridge authorities must match the bridge Settings wallet.
 
-**Fix (no full Reset):** create a new outbound bridge with the local wallet, update the route, restart the bridge:
+**Fix (no full Reset):** create a new outbound **hub** (first lane) with the local wallet, update the route, restart the bridge:
 
 ```bash
 source "$ENV_LP"
@@ -300,6 +347,40 @@ Stop Terminal 4, rebuild/restart `lightpool-bridge`, update the **LightPool fore
 
 ---
 
+## Adding another token lane (Reth hub)
+
+Example: add **USDC** alongside existing USDT on the **same** EVM bridge and local inbound hub.
+
+**1. Reth — deploy ERC20 and register on the bridge hub**
+
+```bash
+source "$ENV_BRIDGE"
+# Deploy your MockUSDC (or reuse an existing ERC20), then:
+cast send "$BRIDGE" "registerToken(address)" "$ETH_USDC" \
+  --rpc-url "$RETH_RPC" --private-key "$PK"
+```
+
+**2. Local LP — register inbound lane** (`reg_lane` on existing `$INBOUND_BRIDGE`)
+
+Submit an inbound module action `reg_lane` on `$INBOUND_BRIDGE` with `foreign_token` = EVM USDC address and a new name/symbol (mints a new LP token to bridge custody). Use the node CLI/SDK when a dedicated command is available; until then, build the action from `RegisterInboundLaneParams` (same shape as the first lane in `init-bridge`).
+
+Note the new **LP token** contract id from the `reg_lane` event.
+
+**3. lightpool-bridge — add route**
+
+In Admin UI (**+ Add route** → **EVM (ERC20)**):
+
+- **Local bridge contract** — same `$INBOUND_BRIDGE`
+- **Local LP token** — new LP token from step 2
+- **EVM bridge contract** — same `$BRIDGE`
+- **EVM token address** — `$ETH_USDC`
+
+**4. Deposit / withdraw** — same as Steps 8 and 10, but use `$ETH_USDC` and the new LP token address in `deposit(address,uint64,address)` and `bridge-withdraw`.
+
+Foreign LP outbound hubs follow the same pattern: one `$OUTBOUND_BRIDGE`, multiple lanes, one link route per token pair.
+
+---
+
 ## Reset
 
 Stop Terminal **4 → 3 → 2 → 1**, then:
@@ -308,8 +389,13 @@ Stop Terminal **4 → 3 → 2 → 1**, then:
 rm -rf "$NODE/tools/reth/data/dev" "$NODE/store" "$NODE/store-foreign" \
   "$FOREIGN_DIR" \
   "$HOME/.lightpool/wallet.json" "$HOME/.lightpool/validator.json" \
-  "$CFG" "$ENV_BRIDGE" "$ENV_LP"
+  "$CFG" "$ENV_BRIDGE" "$ENV_LP" \
+  "$BRIDGE/bridge-config-events.db" \
+  "$BRIDGE/bridge-config-events.db-wal" \
+  "$BRIDGE/bridge-config-events.db-shm"
 ```
+
+This clears chain stores, wallets/env, **bridge config** (`$CFG`), and the **Admin UI events DB** next to it (`bridge-config-events.db` + SQLite WAL files).
 
 Repeat from **Step 2 — Build**.
 
@@ -317,4 +403,4 @@ Repeat from **Step 2 — Build**.
 
 - [`RETH_FOREIGN_NODE.md`](RETH_FOREIGN_NODE.md)
 - [`LIGHTPOOL_FOREIGN_NODE.md`](LIGHTPOOL_FOREIGN_NODE.md)
-- Venue / app stack (liquidity maker needs LP USDT on local chain): `lightpool-node/doc/venue-stack-bridge.md` — `00_bridge_bootstrap.py --phase fund`
+- Venue / app stack (liquidity maker needs LP USDT on local chain): `lightpool-node/doc/venue-stack-bridge.md` — `00_bridge_bootstrap.py --phase fund` (maker EVM deposit; must use hub `deposit(address,uint64,address)` with `$ETH_USDT` as in Step 8)
