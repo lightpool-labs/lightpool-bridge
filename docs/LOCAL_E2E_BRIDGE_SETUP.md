@@ -8,11 +8,11 @@ Each leg uses **one bridge** with **multiple tokens** (one foreign token ↔ one
 
 | Leg | On-chain bridge | Register token |
 | --- | --- | --- |
-| **Local LP inbound** | Inbound instance (`$INBOUND_BRIDGE`, usually `0x06…0001`) | `create` creates bridge + first token; more tokens via `reg_lane` |
-| **Reth** | EVM `Bridge` contract (`$BRIDGE`) | Deployer: `registerToken(erc20)` per ERC20 |
-| **Foreign LP outbound** | Outbound instance (`$OUTBOUND_BRIDGE`) | `create-outbound-bridge` creates bridge + first token; more tokens via `reg_lane` |
+| **Local LP inbound** | Inbound instance | `create` creates bridge + first token; more tokens via `reg_lane` |
+| **Reth** | EVM `Bridge` contract | Deployer: `registerToken(erc20)` per ERC20 |
+| **Foreign LP outbound** | Outbound instance | `create-outbound-bridge` creates bridge + first token; more tokens via `reg_lane` |
 
-**lightpool-bridge** watches **one route per token**. Several routes may share the same EVM `$BRIDGE` and local `$INBOUND_BRIDGE` — they differ by **token address** and **LP token**. Config uses flat `routes[]` (Admin UI).
+**lightpool-bridge** watches **one route per token**. Several routes may share the same EVM `$BRIDGE` and local `$INBOUND_BRIDGE` — they differ by **token address** and **LP token**. 
 
 ```text
 ~/work/lightpool-labs/
