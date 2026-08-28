@@ -7,33 +7,26 @@ Linear guide: **local LightPool** + **Reth (EVM)** + **foreign LightPool** + **l
 Each leg uses **one bridge** with **multiple tokens** (one foreign token ↔ one LP token):
 
 <table>
-<thead>
-<tr>
-<th style="white-space:nowrap; min-width:11em">Leg</th>
-<th style="white-space:nowrap; min-width:12em">On-chain bridge</th>
-<th>Register token</th>
-</tr>
-</thead>
 <tbody>
 <tr>
-<td style="white-space:nowrap"><strong>Local LP inbound</strong></td>
+<td style="white-space:nowrap">Local LP inbound</td>
 <td style="white-space:nowrap">Inbound instance</td>
-<td><code>create</code> creates bridge + first token; more tokens via <code>reg_lane</code></td>
+<td>create creates bridge + first token; more tokens via reg_lane</td>
 </tr>
 <tr>
-<td style="white-space:nowrap"><strong>Reth</strong></td>
-<td style="white-space:nowrap">EVM <code>Bridge</code> contract</td>
-<td>Deployer: <code>registerToken(erc20)</code> per ERC20</td>
+<td style="white-space:nowrap">Reth</td>
+<td style="white-space:nowrap">EVM Bridge contract</td>
+<td>Deployer: registerToken(erc20) per ERC20</td>
 </tr>
 <tr>
-<td style="white-space:nowrap"><strong>Foreign LP outbound</strong></td>
+<td style="white-space:nowrap">Foreign LP outbound</td>
 <td style="white-space:nowrap">Outbound instance</td>
-<td><code>create-outbound-bridge</code> creates bridge + first token; more tokens via <code>reg_lane</code></td>
+<td>create-outbound-bridge creates bridge + first token; more tokens via reg_lane</td>
 </tr>
 </tbody>
 </table>
 
-**lightpool-bridge** watches **one route per token**. Several routes may share the same EVM `$BRIDGE` and local `$INBOUND_BRIDGE` — they differ by **token address** and **LP token**. 
+**lightpool-bridge** watches **one route per token**. Several routes may share the same EVM $BRIDGE and local $INBOUND_BRIDGE — they differ by **token address** and **LP token**.
 
 ```text
 ~/work/lightpool-labs/
