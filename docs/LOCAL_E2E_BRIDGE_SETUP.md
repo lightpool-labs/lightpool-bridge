@@ -42,16 +42,37 @@ Each leg uses **one bridge** with **multiple tokens** (one foreign token ↔ one
 └── lightpool-bridge/            → Terminal 4 (bridge + Admin UI :8787)
 ```
 
-Token amounts use **6 decimals** (USDT). `100000000` raw = **100 USDT**.
+<table>
+<tbody>
+<tr>
+<td style="white-space:nowrap">terminal 1</td>
+<td style="white-space:nowrap">Reth</td>
+<td style="white-space:nowrap">HTTP 8545, WS 8546</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">terminal 2</td>
+<td style="white-space:nowrap">Foreign LightPool validator</td>
+<td style="white-space:nowrap">27300</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">terminal 3</td>
+<td style="white-space:nowrap">Local LightPool validator</td>
+<td style="white-space:nowrap">26300</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">terminal 4</td>
+<td style="white-space:nowrap">lightpool-bridge + Admin UI</td>
+<td style="white-space:nowrap">8787</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">terminal 5</td>
+<td style="white-space:nowrap">run commands</td>
+<td style="white-space:nowrap">—</td>
+</tr>
+</tbody>
+</table>
 
-| Terminal | Process | RPC |
-| --- | --- | --- |
-| **1** | Reth | HTTP `8545`, WS `8546` |
-| **2** | Foreign LightPool validator | `27300` |
-| **3** | Local LightPool validator | `26300` |
-| **4** | `lightpool-bridge` + Admin UI | `8787` |
-
-Other commands run in a normal shell after **Step 1 — Env**.
+Use terminal 5 for bootstrap, cast, and lightpool CLI after Step 1 — Env.
 
 ---
 
@@ -136,7 +157,7 @@ lightpool node --role validator
 
 Wait until the validator committee is running.
 
-## Step 6 — Bootstrap on-chain contracts
+## Step 6 — Bootstrap on-chain contracts (Terminal 5)
 
 
 ```bash
@@ -183,7 +204,7 @@ echo "Foreign bridge contract:   $OUTBOUND_BRIDGE"
 echo "Foreign token:             $FOREIGN_USDT"
 ```
 
-## Step 8 — Deposit via Reth (EVM → local)
+## Step 8 — Deposit via Reth (EVM → local) (Terminal 5)
 
 ```bash
 source "$ENV_BRIDGE"
@@ -202,7 +223,7 @@ lightpool --rpc-url "$LP_RPC" balance --token-address "$LP_USDT" --account "$LP_
 
 Wait for **`confirm_dep_ok`** in Terminal 4 before checking balance.
 
-## Step 9 — Deposit via foreign LightPool
+## Step 9 — Deposit via foreign LightPool (Terminal 5)
 
 ```bash
 source "$ENV_LP"
@@ -220,7 +241,7 @@ lightpool --rpc-url "$LP_RPC" balance --token-address "$LOCAL_LP_USDT" --account
 
 Wait for **`confirm_dep_ok`** in Terminal 4.
 
-## Step 10 — Withdraw to Reth (local → EVM)
+## Step 10 — Withdraw to Reth (local → EVM) (Terminal 5)
 
 ```bash
 source "$ENV_BRIDGE"
@@ -236,7 +257,7 @@ cast call "$ETH_USDT" "balanceOf(address)(uint256)" "$RECV" --rpc-url "$RETH_RPC
 
 Wait for **`evm_finalized`** in Terminal 4.
 
-## Step 11 — Withdraw to foreign LightPool
+## Step 11 — Withdraw to foreign LightPool (Terminal 5)
 
 ```bash
 source "$ENV_LP"
