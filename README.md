@@ -1,6 +1,6 @@
 # lightpool-bridge
 
-Standalone off-chain bridge link for LightPool: watches foreign chains and local LightPool, collects validator signatures, and submits confirmations / unlocks. Includes EVM hub contracts under `contracts/` and an embedded Admin UI.
+Off-chain bridge for **deposit and withdraw** between **EVM (Reth)**, **LightPool**, and **Bank** on one side and a **LightPool** node on the other. It watches those endpoints, collects validator signatures, and submits confirmations / unlocks. Ships EVM hub contracts under `contracts/` and an embedded Admin UI.
 
 ## Architecture
 
