@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "lightpool-bridge"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2236,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "lightpool-types"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "arc-swap",

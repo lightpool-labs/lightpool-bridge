@@ -1,6 +1,6 @@
 # lightpool-bridge
 
-Off-chain bridge for **deposit and withdraw** between **EVM (Reth)**, **LightPool**, and **Bank** on one side and a **LightPool** node on the other. It watches those endpoints, collects validator signatures, and submits confirmations / unlocks. Ships EVM hub contracts under `contracts/` and an embedded Admin UI.
+Off-chain bridge for **deposit and withdraw** between **EVMs**, **LightPools**, and **Banks** on one side and a **LightPool** node on the other. It watches those endpoints, collects committee signatures, and submits confirmations / unlocks. Ships EVM hub contracts under `contracts/` and an embedded Admin UI.
 
 ## Architecture
 

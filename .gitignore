@@ -7,3 +7,4 @@ contracts/broadcast/
 bridge-config.json
 /store/
 *.log
+bridge-config-events.db

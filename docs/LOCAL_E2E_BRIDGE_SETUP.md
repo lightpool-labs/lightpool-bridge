@@ -175,7 +175,9 @@ python3 01_lp_foreign_bootstrap.py --phase all
 
 Admin UI: **http://127.0.0.1:8787**
 
-### Reth route — Admin UI fields
+`00_bridge_bootstrap.py --phase create` already upserts **reth-usdt** into `$CFG`. Confirm or re-print fields:
+
+### Reth route (auto from create)
 
 ```bash
 source "$ENV_BRIDGE"
