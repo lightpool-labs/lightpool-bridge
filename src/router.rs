@@ -19,7 +19,7 @@ use lightpool_types::Committee;
 use log::{debug, info, warn};
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::actions::{CONFIRM_DEP_ACTION, DEPOSIT_ACTION};
@@ -27,9 +27,11 @@ use crate::config::{BridgeConfigError, BridgeLinkConfig};
 use crate::events::{events_db_path, BridgeEventKind, BridgeEventLevel, EventStore};
 use crate::handle::RouteStatusSnapshot;
 use crate::evm::{
-    cast_finalize_withdraw, cast_request_withdraw, dispute_block_delay, eth_block_number,
-    eth_sign_digest, fetch_dispute_params, request_withdraw_digest, secret_key_hex,
-    still_in_dispute_error, withdraw_id, EthSignature, EvmCommittee,
+    already_processed_error, cast_finalize_committee_update, cast_finalize_withdraw,
+    cast_request_committee_update, cast_request_withdraw, dispute_block_delay, eth_block_number,
+    eth_sign_digest, fetch_bridge_epoch, fetch_dispute_params, request_committee_update_digest,
+    request_withdraw_digest, secret_key_hex, still_in_dispute_error, withdraw_id, EthSignature,
+    EvmCommittee,
 };
 use crate::lp::LightpoolClient;
 use crate::messages::{BridgeLinkVote, BridgeVoteKind};
@@ -42,6 +44,8 @@ use crate::util::{
 const LEADER_ROTATION_SECONDS: u64 = 200;
 const EVM_REQUEST_ATTEMPTS: u32 = 5;
 const EVM_FINALIZE_POLL_MS: u64 = 500;
+const EVM_COMMITTEE_SYNC_POLL_MS: u64 = 500;
+const EVM_COMMITTEE_SYNC_ATTEMPTS: u32 = 40;
 
 #[derive(Debug, Serialize)]
 struct ConfirmDepositParams {
@@ -103,6 +107,8 @@ pub struct BridgeRouter {
     secret_key: SecretKey,
     local: Arc<RwLock<LightpoolClient>>,
     committee: Arc<RwLock<Committee>>,
+    /// Serializes EVM Bridge committee updates (request + dispute wait + finalize).
+    evm_committee_sync: Arc<Mutex<()>>,
     pending: Arc<RwLock<HashMap<(String, BridgeVoteKind, u64), VoteBucket>>>,
     routes: Arc<RwLock<Vec<Arc<RouteState>>>>,
     evm_subscriber_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
@@ -139,6 +145,7 @@ impl BridgeRouter {
             secret_key,
             local,
             committee: Arc::new(RwLock::new(committee)),
+            evm_committee_sync: Arc::new(Mutex::new(())),
             pending: Arc::new(RwLock::new(HashMap::new())),
             routes,
             evm_subscriber_tokens: Arc::new(RwLock::new(HashMap::new())),
@@ -588,6 +595,12 @@ impl BridgeRouter {
         let _ = self.refresh_committee().await;
         for state in self.routes.read().await.iter() {
             if let Some(route_def) = self.route_cfg(state).await {
+                if let Err(err) = self.sync_evm_committee_if_needed(&route_def).await {
+                    warn!(
+                        "Route {} initial EVM committee sync failed: {}",
+                        state.route_id, err
+                    );
+                }
                 let _ = self.refresh_route_config(state, &route_def).await;
             }
         }
@@ -613,6 +626,12 @@ impl BridgeRouter {
 
     async fn prepare_route(&self, state: &RouteState, route_def: &BridgeRoute) {
         let _ = self.refresh_committee().await;
+        if let Err(err) = self.sync_evm_committee_if_needed(route_def).await {
+            warn!(
+                "Route {} EVM committee sync failed: {}",
+                state.route_id, err
+            );
+        }
         let _ = self.refresh_route_config(state, route_def).await;
     }
 
@@ -636,6 +655,181 @@ impl BridgeRouter {
             }
         }
         Ok(())
+    }
+
+    /// When LightPool consensus epoch advances, push the new committee onto the EVM Bridge
+    /// via requestCommitteeUpdate + finalizeCommitteeUpdate (after the dispute window).
+    async fn sync_evm_committee_if_needed(&self, route_def: &BridgeRoute) -> anyhow::Result<()> {
+        let ForeignLeg::Evm {
+            rpc_url,
+            bridge_address,
+            confirmations,
+            ..
+        } = &route_def.foreign
+        else {
+            return Ok(());
+        };
+
+        // Ensure we compare against the latest LightPool committee.
+        let _ = self.refresh_committee().await;
+
+        let next = {
+            let committee = self.committee.read().await;
+            if committee.size() == 0 {
+                return Ok(());
+            }
+            EvmCommittee::from_validator_committee(&committee)
+        };
+        if next.validators.is_empty() {
+            return Ok(());
+        }
+
+        let on_chain_epoch = match fetch_bridge_epoch(rpc_url, bridge_address).await {
+            Ok(epoch) => epoch,
+            Err(err) => {
+                debug!(
+                    "Route {} skip EVM committee sync (epoch() unavailable): {}",
+                    route_def.id, err
+                );
+                return Ok(());
+            }
+        };
+        if next.epoch <= on_chain_epoch {
+            return Ok(());
+        }
+
+        let _guard = self.evm_committee_sync.lock().await;
+
+        let on_chain_epoch = fetch_bridge_epoch(rpc_url, bridge_address).await?;
+        if next.epoch <= on_chain_epoch {
+            return Ok(());
+        }
+
+        // Active must match the Bridge's current committeeHash. For local epoch rollups the
+        // validator set/stakes stay the same and only epoch changes.
+        let active = EvmCommittee {
+            epoch: on_chain_epoch,
+            validators: next.validators.clone(),
+            stakes: next.stakes.clone(),
+        };
+
+        info!(
+            "Route {} syncing EVM Bridge committee epoch {} -> {}",
+            route_def.id, on_chain_epoch, next.epoch
+        );
+
+        let cast_bin = self.config.read().await.cast_bin.clone();
+        let pk_hex = secret_key_hex(&self.secret_key)?;
+        let digest = request_committee_update_digest(&next);
+        let signature = eth_sign_digest(digest, &self.secret_key)?;
+
+        match cast_request_committee_update(
+            &cast_bin,
+            rpc_url,
+            &pk_hex,
+            bridge_address,
+            &next,
+            &active,
+            &[signature],
+        )
+        .await
+        {
+            Ok(_) => {
+                info!(
+                    "Route {} requested EVM committee update to epoch={}",
+                    route_def.id, next.epoch
+                );
+            }
+            Err(err) => {
+                let detail = err.to_string();
+                if already_processed_error(&detail) {
+                    info!(
+                        "Route {} EVM committee update already pending; waiting to finalize epoch={}",
+                        route_def.id, next.epoch
+                    );
+                } else {
+                    return Err(err);
+                }
+            }
+        }
+
+        let requested_block = eth_block_number(rpc_url).await.unwrap_or(0);
+        let requested_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let dispute = fetch_dispute_params(rpc_url, bridge_address)
+            .await
+            .unwrap_or_default();
+        let block_delay = dispute_block_delay(dispute, *confirmations);
+
+        for attempt in 1..=EVM_COMMITTEE_SYNC_ATTEMPTS {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let latest = eth_block_number(rpc_url).await.unwrap_or(0);
+            let blocks_ready = latest >= requested_block.saturating_add(block_delay);
+            let time_ready = now_ms
+                >= requested_at_ms
+                    .saturating_add(dispute.period_seconds.saturating_mul(1000))
+                    .saturating_add(1);
+            if !blocks_ready || !time_ready {
+                debug!(
+                    "Route {} waiting dispute before finalizeCommitteeUpdate attempt={attempt} latest={latest} need>={}",
+                    route_def.id,
+                    requested_block.saturating_add(block_delay).saturating_sub(1)
+                );
+                tokio::time::sleep(Duration::from_millis(EVM_COMMITTEE_SYNC_POLL_MS)).await;
+                continue;
+            }
+
+            match cast_finalize_committee_update(&cast_bin, rpc_url, &pk_hex, bridge_address)
+                .await
+            {
+                Ok(_) => {
+                    let synced = fetch_bridge_epoch(rpc_url, bridge_address).await?;
+                    info!(
+                        "Route {} finalized EVM committee update epoch={}",
+                        route_def.id, synced
+                    );
+                    if synced < next.epoch {
+                        return Err(anyhow::anyhow!(
+                            "EVM Bridge epoch {} still behind LightPool epoch {}",
+                            synced,
+                            next.epoch
+                        ));
+                    }
+                    return Ok(());
+                }
+                Err(err) => {
+                    let detail = err.to_string();
+                    if still_in_dispute_error(&detail) {
+                        tokio::time::sleep(Duration::from_millis(EVM_COMMITTEE_SYNC_POLL_MS))
+                            .await;
+                        continue;
+                    }
+                    let synced = fetch_bridge_epoch(rpc_url, bridge_address)
+                        .await
+                        .unwrap_or(on_chain_epoch);
+                    if synced >= next.epoch {
+                        info!(
+                            "Route {} EVM committee already at epoch={} after finalize error: {}",
+                            route_def.id, synced, detail
+                        );
+                        return Ok(());
+                    }
+                    return Err(anyhow::anyhow!(
+                        "finalizeCommitteeUpdate failed: {detail}"
+                    ));
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "timed out waiting to finalize EVM committee update to epoch {}",
+            next.epoch
+        ))
     }
 
     async fn refresh_route_config(
@@ -724,10 +918,8 @@ impl BridgeRouter {
 
     fn evm_withdraw_permanent_failure(detail: &str) -> bool {
         let lower = detail.to_ascii_lowercase();
-        lower.contains("invalidcommittee")
-            || lower.contains("invalid committee")
-            || lower.contains("not in authorities")
-            || lower.contains("unauthorized")
+        // InvalidCommittee is handled by sync_evm_committee_if_needed + retry, not permanent.
+        lower.contains("not in authorities") || lower.contains("unauthorized")
     }
 
     async fn enqueue_evm_withdraw(
@@ -935,27 +1127,37 @@ impl BridgeRouter {
             Ok(cfg) => cfg,
             Err(_) => return Ok(false),
         };
+        if let Err(err) = self.sync_evm_committee_if_needed(route_def).await {
+            warn!(
+                "Route {} EVM committee sync before requestWithdraw: {}",
+                state.route_id, err
+            );
+            return Err(err);
+        }
         let lane = crate::util::inbound_lane_for_route(&bridge_cfg, route_def)?;
         let cast_bin = self.config.read().await.cast_bin.clone();
-        let committee_guard = self.committee.read().await;
-        let epoch = if committee_guard.size() == 0 {
-            0
-        } else {
-            committee_guard.epoch as u64
-        };
-        let evm_committee = if committee_guard.size() == 0 {
-            EvmCommittee {
-                epoch: 0,
-                validators: Vec::new(),
-                stakes: Vec::new(),
-            }
-        } else {
-            EvmCommittee::from_validator_committee(&committee_guard)
-        };
-        drop(committee_guard);
         let pk_hex = secret_key_hex(&self.secret_key)?;
 
         for attempt in 1..=EVM_REQUEST_ATTEMPTS {
+            let (epoch, evm_committee) = {
+                let committee_guard = self.committee.read().await;
+                if committee_guard.size() == 0 {
+                    (
+                        0u64,
+                        EvmCommittee {
+                            epoch: 0,
+                            validators: Vec::new(),
+                            stakes: Vec::new(),
+                        },
+                    )
+                } else {
+                    (
+                        committee_guard.epoch as u64,
+                        EvmCommittee::from_validator_committee(&committee_guard),
+                    )
+                }
+            };
+
             let snapshot = state.pending_evm_withdraws.read().await.get(&nonce).cloned();
             let Some(mut item) = snapshot else {
                 return Ok(false);
@@ -966,6 +1168,32 @@ impl BridgeRouter {
             if item.requested && item.requested_block.is_some() {
                 return Ok(true);
             }
+
+            // Re-bind id/signature to the current committee epoch (may advance mid-flight).
+            let user = *item.record.sender.as_bytes();
+            let id = withdraw_id(
+                item.record.nonce,
+                user,
+                item.record.foreign_recipient,
+                item.record.amount,
+                epoch,
+            );
+            let digest = request_withdraw_digest(
+                id,
+                user,
+                item.record.foreign_recipient,
+                lane.foreign_token,
+                item.record.amount,
+                item.record.nonce,
+                epoch,
+            );
+            item.id = id;
+            item.signature = eth_sign_digest(digest, &self.secret_key)?;
+            state
+                .pending_evm_withdraws
+                .write()
+                .await
+                .insert(nonce, item.clone());
 
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1039,6 +1267,24 @@ impl BridgeRouter {
                         return Ok(ready);
                     }
                     let mut detail = detail;
+                    let invalid_committee = detail.to_ascii_lowercase().contains("invalidcommittee")
+                        || detail.to_ascii_lowercase().contains("invalid committee")
+                        || detail.contains("0x7ffe1a65");
+                    if invalid_committee {
+                        match self.sync_evm_committee_if_needed(route_def).await {
+                            Ok(()) => {
+                                info!(
+                                    "Route {} retried EVM committee sync after InvalidCommittee nonce={}",
+                                    state.route_id, nonce
+                                );
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue;
+                            }
+                            Err(sync_err) => {
+                                detail = format!("{detail}; committee sync: {sync_err}");
+                            }
+                        }
+                    }
                     if detail.contains("estimate gas") || detail.contains("estimateGas") {
                         detail.push_str(
                             " (hint: EVM Bridge genesis committee likely mismatches LightPool; \

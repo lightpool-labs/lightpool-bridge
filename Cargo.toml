@@ -3,6 +3,7 @@ name = "lightpool-bridge"
 version = "0.4.0"
 edition = "2021"
 authors = ["LightPool Team"]
+license = "MIT"
 description = "Off-chain LightPool bridge process: watch EVM, collect signatures, submit confirmations"
 publish = false
 

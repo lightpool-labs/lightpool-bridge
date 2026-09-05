@@ -94,6 +94,52 @@ pub fn request_withdraw_digest(
     Keccak256::digest(encoded)
 }
 
+/// Digest for Bridge.requestCommitteeUpdate quorum signatures.
+pub fn request_committee_update_digest(next: &EvmCommittee) -> [u8; 32] {
+    let validators = next
+        .validators
+        .iter()
+        .map(|a| Token::Address(EthAddress::from(*a)))
+        .collect();
+    let stakes = next
+        .stakes
+        .iter()
+        .map(|s| Token::Uint(U256::from(*s)))
+        .collect();
+    let encoded = encode(&[
+        Token::String("requestCommitteeUpdate".into()),
+        Token::Uint(U256::from(next.epoch)),
+        Token::Array(validators),
+        Token::Array(stakes),
+    ]);
+    Keccak256::digest(encoded)
+}
+
+fn format_committee_arg(committee: &EvmCommittee) -> String {
+    let validators = committee
+        .validators
+        .iter()
+        .map(addr_hex)
+        .collect::<Vec<_>>()
+        .join(",");
+    let stakes = committee
+        .stakes
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("({},[{}],[{}])", committee.epoch, validators, stakes)
+}
+
+fn format_sigs_arg(signatures: &[EthSignature]) -> String {
+    let sigs = signatures
+        .iter()
+        .map(|s| format!("({},{},{})", s.v, bytes32_hex(&s.r), bytes32_hex(&s.s)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{}]", sigs)
+}
+
 pub fn eth_sign_digest(digest: [u8; 32], secret: &SecretKey) -> Result<EthSignature> {
     let mut prefixed = Vec::with_capacity(2 + 26 + 32);
     prefixed.extend_from_slice(b"\x19Ethereum Signed Message:\n32");
@@ -217,6 +263,18 @@ pub async fn fetch_dispute_params(rpc: &str, bridge: &str) -> Result<EvmDisputeP
     })
 }
 
+/// Bridge.epoch() public getter.
+pub async fn fetch_bridge_epoch(rpc: &str, bridge: &str) -> Result<u64> {
+    eth_call_u64(rpc, bridge, "0x900cf0cf").await
+}
+
+pub fn already_processed_error(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("0x57eee766")
+        || lower.contains("alreadyprocessed")
+        || lower.contains("already processed")
+}
+
 /// Blocks that must elapse after request before Bridge.finalizeWithdraw can succeed.
 /// Mirrors Bridge._inDispute: need elapsedBlocks * blockDurationMillis > 1000 * disputePeriodSeconds.
 pub fn dispute_block_delay(params: EvmDisputeParams, confirmations: u64) -> u64 {
@@ -256,25 +314,8 @@ pub async fn cast_request_withdraw(
         record.nonce,
         epoch
     );
-    let validators = committee
-        .validators
-        .iter()
-        .map(addr_hex)
-        .collect::<Vec<_>>()
-        .join(",");
-    let stakes = committee
-        .stakes
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let active = format!("({},[{}],[{}])", committee.epoch, validators, stakes);
-    let sigs = signatures
-        .iter()
-        .map(|s| format!("({},{},{})", s.v, bytes32_hex(&s.r), bytes32_hex(&s.s)))
-        .collect::<Vec<_>>()
-        .join(",");
-    let sigs_arg = format!("[{}]", sigs);
+    let active = format_committee_arg(committee);
+    let sigs_arg = format_sigs_arg(signatures);
 
     let output = Command::new(cast_bin)
         .args([
@@ -298,6 +339,78 @@ pub async fn cast_request_withdraw(
     if !output.status.success() {
         return Err(anyhow!(
             "cast requestWithdraw failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub async fn cast_request_committee_update(
+    cast_bin: &str,
+    rpc: &str,
+    private_key_hex: &str,
+    bridge: &str,
+    next: &EvmCommittee,
+    active: &EvmCommittee,
+    signatures: &[EthSignature],
+) -> Result<String> {
+    let next_arg = format_committee_arg(next);
+    let active_arg = format_committee_arg(active);
+    let sigs_arg = format_sigs_arg(signatures);
+
+    let output = Command::new(cast_bin)
+        .args([
+            "send",
+            bridge,
+            "requestCommitteeUpdate((uint64,address[],uint64[]),(uint64,address[],uint64[]),(uint8,bytes32,bytes32)[])",
+            &next_arg,
+            &active_arg,
+            &sigs_arg,
+            "--rpc-url",
+            rpc,
+            "--private-key",
+            private_key_hex,
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to spawn cast for requestCommitteeUpdate")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "cast requestCommitteeUpdate failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub async fn cast_finalize_committee_update(
+    cast_bin: &str,
+    rpc: &str,
+    private_key_hex: &str,
+    bridge: &str,
+) -> Result<String> {
+    let output = Command::new(cast_bin)
+        .args([
+            "send",
+            bridge,
+            "finalizeCommitteeUpdate()",
+            "--rpc-url",
+            rpc,
+            "--private-key",
+            private_key_hex,
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to spawn cast for finalizeCommitteeUpdate")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "cast finalizeCommitteeUpdate failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
