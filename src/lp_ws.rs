@@ -215,9 +215,6 @@ async fn catch_up_local_withdraws(
     route_def: &BridgeRoute,
     local_rpc_url: &str,
 ) {
-    if !matches!(route_def.foreign, ForeignLeg::Lightpool { .. }) {
-        return;
-    }
     let Ok(inbound) = parse_contract_address(&route_def.local_inbound.bridge_contract) else {
         return;
     };
@@ -271,16 +268,34 @@ async fn subscribe_receipt_blocks(ws: &mut WsStream) -> anyhow::Result<()> {
 
 fn parse_receipt_block_notification(text: &str) -> Option<ReceiptBlock> {
     let value: Value = serde_json::from_str(text).ok()?;
-    if let Some(data) = value
-        .get("params")
-        .and_then(|params| params.get("result"))
-        .and_then(|result| result.get("data"))
-    {
-        if let Ok(message) = serde_json::from_value::<WsMessagePayload>(data.clone()) {
-            return message.receipt_block();
-        }
+    let result = value.get("params").and_then(|params| params.get("result"))?;
+    receipt_block_from_notification_result(result)
+}
+
+fn receipt_block_from_notification_result(result: &Value) -> Option<ReceiptBlock> {
+    if let Some(block) = receipt_block_from_bincode_notification(result) {
+        return Some(block);
+    }
+    // Legacy JSON envelope: params.result.data = Message::ReceiptBlock(...)
+    let data = result.get("data")?;
+    if let Ok(message) = serde_json::from_value::<WsMessagePayload>(data.clone()) {
+        return message.receipt_block();
     }
     None
+}
+
+fn receipt_block_from_bincode_notification(result: &Value) -> Option<ReceiptBlock> {
+    let encoding = result.get("encoding").and_then(|v| v.as_str())?;
+    if encoding != "bincode" {
+        return None;
+    }
+    let kind = result.get("kind").and_then(|v| v.as_str())?;
+    if kind != "ReceiptBlock" && kind != "NewBlock" {
+        return None;
+    }
+    let payload_b64 = result.get("payload_b64").and_then(|v| v.as_str())?;
+    let bytes = base64::decode(payload_b64).ok()?;
+    bincode::deserialize::<ReceiptBlock>(&bytes).ok()
 }
 
 #[derive(Debug, Deserialize)]

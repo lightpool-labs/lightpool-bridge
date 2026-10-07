@@ -1643,13 +1643,6 @@ impl BridgeRouter {
         }
 
         let deposit_id = topic_u64(topics[1].as_str().unwrap_or_default())?;
-        {
-            let mut seen = state.seen_deposits.write().await;
-            if !seen.insert((lane.lane_index, deposit_id)) {
-                return Ok(());
-            }
-        }
-
         let sender_foreign = topic_address(topics[2].as_str().unwrap_or_default())?;
         let recipient_bytes = topic_address(topics[3].as_str().unwrap_or_default())?;
         let data_hex = log
@@ -1664,6 +1657,12 @@ impl BridgeRouter {
         let log_token = address_from_word(&data[0..32])?;
         if log_token != expected_token {
             return Ok(());
+        }
+        {
+            let mut seen = state.seen_deposits.write().await;
+            if !seen.insert((lane.lane_index, deposit_id)) {
+                return Ok(());
+            }
         }
         let amount = u64_from_word(&data[32..64])?;
         let source_block = u64_from_word(&data[64..96])?;
